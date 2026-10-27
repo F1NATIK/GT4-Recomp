@@ -1,0 +1,51 @@
+# --- Never commit: made from or copied off the game ---
+core-generated/
+*.iso
+*.bin
+*.img
+*.mdf
+*.elf
+CORE.ELF
+game/
+GT4.exe
+*.ps2
+*.mcd
+memcards/
+saves/
+dumps/
+screenshots/
+captures/
+*.wav
+*.mp3
+
+# --- Personal / local ---
+logs/
+*.log
+settings.local.*
+user-config/
+
+# --- Build output ---
+build/
+out/
+bin/
+obj/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+.vs/
+*.user
+
+# --- Made from your own disc by the build steps (docs/BUILDING.md) ---
+analysis/
+*.GT4
+*.VOL
+recomp/ps2xRuntime/src/gt4_late/
+recomp/ps2xRuntime/src/lib/vu/generated*/
+hud-pictures/
+texture-dump/
+texture-replace/
+mc0/
+mc1/
+sdk/

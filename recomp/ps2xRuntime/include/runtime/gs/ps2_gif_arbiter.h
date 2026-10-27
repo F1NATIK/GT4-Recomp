@@ -1,0 +1,53 @@
+#ifndef PS2_GIF_ARBITER_H
+#define PS2_GIF_ARBITER_H
+
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+enum class GifPathId : uint8_t
+{
+    Path1 = 1,
+    Path2 = 2,
+    Path3 = 3,
+};
+
+struct GifArbiterPacket
+{
+    GifPathId pathId;
+    bool path2DirectHl = false;
+    bool path3Image = false;
+    std::vector<uint8_t> data;
+};
+
+class GifArbiter
+{
+public:
+    using ProcessPacketFn = std::function<void(const uint8_t *, uint32_t)>;
+    // Takes the packet bytes by swapping them out of the vector (it may leave
+    // a spare buffer there for the arbiter to reuse).
+    using TakePacketFn = std::function<void(std::vector<uint8_t> &)>;
+
+    GifArbiter() = default;
+    explicit GifArbiter(ProcessPacketFn processFn);
+
+    void setProcessPacketFn(ProcessPacketFn fn) { m_processFn = std::move(fn); }
+    // Preferred over the ProcessPacketFn when set: no copy on drain.
+    void setTakePacketFn(TakePacketFn fn) { m_takeFn = std::move(fn); }
+
+    void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
+
+    void drain();
+    bool empty() const { return m_queue.empty(); }
+
+private:
+    ProcessPacketFn m_processFn;
+    TakePacketFn m_takeFn;
+    std::vector<GifArbiterPacket> m_queue;
+    std::vector<std::vector<uint8_t>> m_free;
+
+    static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
+    static uint8_t pathPriority(GifPathId id);
+};
+
+#endif

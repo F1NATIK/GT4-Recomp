@@ -1,0 +1,2828 @@
+<meta charset="utf-8">
+<title>GT Race Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: dark;
+    --ground: #121418;
+    --panel: #1b1e24;
+    --panel-2: #23272f;
+    --rule: #2f343d;
+    --ink: #e9ebef;
+    --ink-2: #a8aeb9;
+    --ink-3: #737b88;
+    --line: #ff8a3d;
+    --line-soft: rgba(255, 138, 61, .18);
+    --auto: #33d1ff;
+    --bad: #ff4d6a;
+    --good: #4fd18b;
+    --wall: #ffd60a;
+    --focus: #ffd60a;
+    --chip: rgba(19, 21, 26, .88);
+    --display: "Barlow Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+    --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.45 var(--body); }
+  .app {
+    height: 100%; box-sizing: border-box; padding-inline: 16px; padding-block: 12px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 352px; grid-template-rows: auto minmax(0, 1fr); gap: 12px;
+  }
+  .bar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+  .brand { font: 700 22px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; display: flex; align-items: baseline; gap: 8px; }
+  .brand small { font: 500 12px/1 var(--mono); color: var(--ink-3); letter-spacing: .04em; text-transform: none; }
+  select, button { font: 600 14px/1 var(--body); color: var(--ink); background: var(--panel-2); border: 1px solid var(--rule); border-radius: 6px; padding: 9px 12px; cursor: pointer; }
+  select { min-width: 0; max-width: 100%; }
+  #track { flex: 0 1 400px; }
+  button:hover, select:hover { border-color: #4a515d; }
+  button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel); }
+  .seg button[aria-pressed="true"] { background: var(--line); color: #1a1208; }
+  .seg button + button { border-left: 1px solid var(--rule); }
+
+  /* the map, and the few controls that sit on it */
+  .stage { position: relative; min-height: 0; background: #0d0f12; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; touch-action: none; container-type: inline-size; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  .stage.draw canvas { cursor: crosshair; }
+  .stage.turning canvas { cursor: ew-resize; }
+  .stage.onbadge canvas { cursor: context-menu; }
+  /* a slow glow round the braking point under the pointer, when it can be edited (moved with the map; the canvas isn't redrawn for it) */
+  .glows { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .glows i { position: absolute; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; animation: bglow 2.4s ease-in-out infinite; }
+  @keyframes bglow {
+    0%, 100% { box-shadow: 0 0 10px 4px rgba(255, 120, 140, .45), 0 0 0 2px rgba(255, 255, 255, .45); }
+    50% { box-shadow: 0 0 18px 8px rgba(255, 120, 140, .7), 0 0 0 2px rgba(255, 255, 255, .85); }
+  }
+  @media (prefers-reduced-motion: reduce) { .glows i { box-shadow: 0 0 8px 3px rgba(255, 120, 140, .4); } }
+  .mapbar { position: absolute; inset: 10px 10px auto 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; pointer-events: none; }
+  .mapleft { display: grid; justify-items: start; gap: 8px; min-width: 0; }
+  .tools, .mapright { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; pointer-events: auto; }
+  .mapright { flex-wrap: nowrap; }
+  .stage .seg { background: var(--chip); }
+  .stage .seg button { background: transparent; }
+  .stage .seg button[aria-pressed="true"] { background: var(--line); }
+  .stage .tools > button, .mapbtn { background: var(--chip); }
+  .tools > button { min-width: 40px; }
+  .mapbtn { display: inline-flex; align-items: center; gap: 7px; }
+  .mapbtn svg { flex: none; }
+  .mapbtn[aria-expanded="true"] { border-color: var(--line); color: var(--line); }
+  .hint { display: flex; align-items: flex-start; gap: 6px; max-width: min(340px, 100%); font: 500 13px/1.35 var(--body); color: var(--ink); background: var(--chip); border: 1px solid var(--rule); padding: 7px 6px 7px 10px; border-radius: 6px; pointer-events: auto; }
+  .hint button { flex: none; padding: 1px 5px 3px; background: none; border: 0; color: var(--ink-3); font: 600 16px/1 var(--body); }
+  .hint button:hover { color: var(--ink); }
+  .pop { position: absolute; right: 10px; top: 58px; width: min(292px, calc(100% - 20px)); max-height: calc(100% - 114px); box-sizing: border-box; overflow-y: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; display: grid; gap: 10px; align-content: start; box-shadow: 0 14px 34px rgba(0, 0, 0, .5); }
+  .pop h2 + .layers { margin-top: -2px; }
+  .pop h2:not(:first-child) { margin-top: 6px; }
+  .rotate { position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--chip); border: 1px solid var(--rule); border-radius: 20px; color: var(--ink); font: 600 12px/1 var(--mono); cursor: grab; touch-action: none; user-select: none; }
+  .rotate:active { cursor: grabbing; }
+  .readout { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 10px; align-items: center; font: 500 12px/1 var(--mono); color: var(--ink-2); background: rgba(13, 15, 18, .78); padding: 7px 9px; border-radius: 6px; pointer-events: none; }
+  .scalebar { height: 6px; border: 2px solid var(--ink-2); border-top: 0; }
+  .seg.edit button { display: inline-flex; align-items: center; gap: 6px; padding-inline: 11px; }
+  .seg.edit svg { flex: none; margin-block: -1px; }
+  .tools { align-items: stretch; }
+  @container (max-width: 820px) {
+    .seg.edit .lbl { display: none; }
+  }
+  @container (max-width: 560px) {
+    .mapbtn .lbl, .tools .pm { display: none; }
+    .readout #cursor { display: none; }
+  }
+
+  /* the side panel: the track, then one tab at a time */
+  .panel { min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .phead { flex: none; padding: 14px 16px 12px; display: grid; gap: 4px; }
+  .trackname { font: 700 26px/1.05 var(--display); letter-spacing: .02em; text-wrap: balance; margin: 0; }
+  .meta { font: 500 12px/1.4 var(--mono); color: var(--ink-3); }
+  .phead .status { margin-top: 4px; }
+  .phead .status:empty { display: none; }
+  .tabs { flex: none; display: flex; gap: 2px; padding-inline: 8px; border-bottom: 1px solid var(--rule); overflow-x: auto; scrollbar-width: none; }
+  .tabs button { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; margin-bottom: -1px; padding: 11px 6px 10px; font: 700 15px/1 var(--display); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+  .tabs button:hover { color: var(--ink); }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--line); }
+  .count { font: 500 10.5px/1 var(--mono); letter-spacing: 0; color: var(--ink-2); background: var(--panel-2); border-radius: 8px; padding: 2px 5px 3px; }
+  .count:empty { display: none; }
+  .live { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px; display: grid; gap: 22px; align-content: start; }
+  .group { display: grid; gap: 8px; min-width: 0; }
+  .panel h2, .pop h2 { margin: 0; font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat { background: var(--panel-2); border-radius: 7px; padding: 7px 10px; }
+  .stat b { display: block; font: 500 17px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--ink-3); letter-spacing: .03em; }
+  .stat.warn b { color: var(--bad); }
+  .stat.ok b { color: var(--good); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .row button { flex: 1 1 auto; }
+  .primary { background: var(--line); border-color: var(--line); color: #1a1208; font-weight: 700; }
+  .primary:hover { border-color: #ffb27d; }
+  .layers { display: grid; gap: 7px; }
+  .layers label { display: flex; align-items: center; gap: 9px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+  .layers label.absent { opacity: .45; }
+  .layers label small { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--ink-3); }
+  #raceTime { width: 100%; margin: 2px 0 0; accent-color: var(--line); }
+  .dim { color: var(--ink-3); font-size: 12px; margin: 0; }
+  .racecars { display: grid; gap: 6px; }
+  .racecar { display: grid; grid-template-columns: auto 14px minmax(0, 1fr); gap: 2px 8px; align-items: baseline; background: var(--panel-2); border-radius: 7px; padding: 7px 9px; }
+  .racecar i { width: 12px; height: 12px; border-radius: 50%; display: block; align-self: center; }
+  .racecar b { font: 600 13px/1.2 var(--body); }
+  .racecar b span { font: 500 12px/1 var(--mono); color: var(--ink-2); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .racecar input { margin: 0; align-self: center; accent-color: var(--line); }
+  .racecar.off { opacity: .5; }
+  .racecar small { grid-column: 3; font-size: 11.5px; color: var(--ink-3); line-height: 1.35; }
+  .raceevents { display: grid; gap: 2px; max-height: 280px; overflow-y: auto; }
+  .raceevents button { text-align: left; font: 500 12px/1.35 var(--body); padding: 5px 8px; background: transparent; border: 0; border-radius: 5px; color: var(--ink-2); }
+  .raceevents button:hover { background: var(--panel-2); }
+  .raceevents button b { font: 500 11px/1 var(--mono); color: var(--ink-3); margin-right: 6px; }
+  .times { display: grid; gap: 4px; }
+  .times button { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline; text-align: left; padding: 7px 9px; background: var(--panel-2); border: 1px solid transparent; border-radius: 7px; font: 600 13px/1.3 var(--body); color: var(--ink); }
+  .times button:hover { border-color: #4a515d; }
+  .times .pos { font: 600 12px/1.3 var(--mono); color: var(--ink-3); }
+  .times .t { font: 600 13px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+  .times .best .t { color: var(--good); }
+  .times button.more { display: block; text-align: center; font: 600 12px/1 var(--body); color: var(--ink-2); padding: 8px; }
+  .times small { grid-column: 2 / -1; font: 500 11.5px/1.35 var(--body); color: var(--ink-3); }
+  .note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-3); }
+  .sw { width: 22px; height: 4px; border-radius: 2px; flex: none; }
+  .status { font-size: 13px; line-height: 1.4; color: var(--ink-2); }
+  .status.err { color: var(--bad); }
+  .status:empty { display: none; }
+  .result { background: var(--panel-2); border-radius: 7px; padding: 9px 10px; font-size: 14px; color: var(--ink-2); white-space: pre-wrap; }
+  /* the line's Save, under every tab */
+  .savebar { flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--rule); background: var(--panel); }
+  .saveinfo { display: grid; gap: 3px; min-width: 0; }
+  .saveinfo b { font: 700 12px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .saveinfo span { font: 500 12px/1.35 var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .saveinfo .off { color: var(--bad); }
+  .help { font-size: 13px; color: var(--ink-2); line-height: 1.5; margin: 0; padding-left: 18px; }
+  .help li + li { margin-top: 4px; }
+  kbd { font: 500 11px/1 var(--mono); background: var(--panel-2); border: 1px solid var(--rule); border-radius: 4px; padding: 2px 5px; color: var(--ink-2); }
+  .tele { display: grid; gap: 6px; }
+  .tele-row { display: flex; justify-content: space-between; font: 500 15px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .meter { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; }
+  .legend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .bmark { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #ff4d6a; border: 2px solid #fff; color: #fff; font: 800 11px/1 var(--mono); margin-left: 8px; box-sizing: border-box; }
+  .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .opts label, .aiset label { display: grid; gap: 4px; min-width: 0; font-size: 12px; color: var(--ink-3); }
+  .opts select, .aiset select { width: 100%; padding: 7px 8px; font-size: 13px; }
+  .aicars { display: grid; gap: 6px; }
+  .aicar { background: var(--panel-2); border-radius: 7px; }
+  .aicar summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; padding: 9px 10px; cursor: pointer; list-style: none; border-radius: 7px; }
+  .aicar summary::-webkit-details-marker { display: none; }
+  .aicar summary b { grid-row: 1 / 3; font: 700 15px/1 var(--display); letter-spacing: .06em; color: var(--ink-2); }
+  .aicar summary .src { grid-column: 2; font: 600 13.5px/1.25 var(--body); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aicar summary small { grid-column: 2; font-size: 12px; line-height: 1.3; color: var(--ink-3); }
+  .aicar summary::after { content: ""; grid-column: 3; grid-row: 1 / 3; width: 7px; height: 7px; border: solid var(--ink-3); border-width: 0 2px 2px 0; transform: rotate(-45deg); margin-right: 4px; }
+  .aicar[open] summary::after { transform: rotate(45deg); }
+  .aiset { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 2px 10px 12px; }
+  .aiset label.wide, .aiset .wide { grid-column: 1 / -1; }
+  .aiset input { width: 100%; box-sizing: border-box; font: 500 13px/1 var(--mono); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 8px; }
+  .aiset input[type="text"] { font-family: var(--body); font-size: 13.5px; }
+  .aiset input:disabled, .aiset select:disabled { opacity: .6; }
+  .carset { background: var(--panel-2); }
+  .carset summary b { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+  button.quiet { justify-self: start; background: none; border-color: transparent; color: var(--ink-2); padding: 6px 2px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule); }
+  button.quiet:hover { color: var(--ink); text-decoration-color: var(--ink-3); border-color: transparent; }
+  .times button.here { border-color: var(--line); }
+  .times button.none { color: var(--ink-3); }
+  .aicar .tag { font: 500 11px/1 var(--mono); color: var(--line); margin-left: 6px; }
+  /* a braking point's menu, and the panel for editing its zone (on the map) */
+  .zmenu { position: absolute; z-index: 3; display: grid; min-width: 190px; padding: 4px; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); }
+  .zmenu button { text-align: left; border: 0; background: none; padding: 9px 10px; }
+  .zmenu button:hover { background: var(--panel-2); }
+  .bzpanel { position: absolute; z-index: 2; left: 50%; bottom: 54px; transform: translateX(-50%); width: min(470px, calc(100% - 20px)); box-sizing: border-box; display: grid; gap: 9px; padding: 12px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 14px 34px rgba(0, 0, 0, .5); }
+  .bzhead { display: flex; align-items: center; gap: 6px; }
+  .bzhead b { flex: 1; font: 700 16px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+  .bzhead button { padding: 7px 10px; }
+  .bzpick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--ink-3); }
+  .bzpick .seg button { padding: 7px 10px; font-size: 13px; }
+  .bzrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 500 13px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+  .bzrow span { flex: 1 1 200px; }
+  .bzrow button { padding: 6px 9px; font: 600 12.5px/1 var(--body); }
+  .bzinfo { font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+  .bzinfo .warn { color: var(--bad); }
+  .bzfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .bzfoot button { padding: 7px 10px; font-size: 13px; }
+  @container (max-width: 560px) {
+    .bzpanel { bottom: 8px; padding: 9px; gap: 6px; }
+    .bzpick > span { display: none; }
+    .bzinfo { font-size: 12px; line-height: 1.35; }
+    .bzrow span { flex-basis: 100%; }
+  }
+  .trchart { display: block; width: 100%; height: 46px; background: var(--panel-2); border-radius: 7px; }
+  .trchart polyline { fill: none; stroke: var(--good); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .trchart text { fill: var(--ink-3); font: 500 10px var(--mono); }
+  @media (max-width: 820px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(340px, 62vh) auto; height: auto; min-height: 100%; }
+    .panel { overflow: visible; }
+    .pane { overflow: visible; }
+    .savebar { position: sticky; bottom: 0; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); border-radius: 0 0 10px 10px; box-shadow: 0 -10px 24px rgba(0, 0, 0, .35); }
+    .brand small { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="app">
+  <header class="bar">
+    <div class="brand">GT Race Lab <small>GT3, GT4 &amp; Tourist Trophy tracks</small></div>
+    <div class="seg" role="group" aria-label="Games" id="games">
+      <button data-group="In GT3 (converted)" aria-pressed="true" title="GT4 and Tourist Trophy tracks converted to drive in GT3">Converted</button>
+      <button data-group="GT3" aria-pressed="false">GT3</button>
+      <button data-group="GT4" aria-pressed="false">GT4</button>
+    </div>
+    <label for="track" hidden>Track</label>
+    <select id="track" aria-label="Track"></select>
+  </header>
+
+  <main class="stage draw" id="stage">
+    <canvas id="map" aria-label="Track map"></canvas>
+    <div class="glows" id="glows" aria-hidden="true"></div>
+    <div class="mapbar">
+      <div class="mapleft">
+        <div class="tools">
+          <div class="seg" role="group" aria-label="Mode">
+            <button id="modeMove" aria-pressed="false" title="Drag to move the map">Move</button>
+            <button id="modeDraw" aria-pressed="true" title="Tap to place points">Draw</button>
+          </div>
+          <div class="seg edit" role="group" aria-label="Edit your line">
+            <button id="mapUndo" aria-label="Undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9 14 4 9l5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg><span class="lbl">Undo</span></button>
+            <button id="mapDel" aria-label="Delete point" title="Delete the selected point (Delete key)" disabled><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">Delete point</span></button>
+            <button id="mapReverse" aria-label="Reverse" title="Swap the driving direction"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 8h14l-4-4M20 16H6l4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl">Reverse</span></button>
+          </div>
+          <button id="zoomOut" class="pm" aria-label="Zoom out">−</button>
+          <button id="zoomIn" class="pm" aria-label="Zoom in">+</button>
+          <button id="zoomFit" title="Show the whole track">Fit</button>
+        </div>
+        <div class="hint" id="hint"><span id="hintText">Tap the track to add points. Drag a point to move it.</span><button id="hintClose" aria-label="Hide this tip" title="Hide this tip">×</button></div>
+      </div>
+      <div class="mapright">
+        <button class="mapbtn" id="layersBtn" aria-expanded="false" aria-controls="layersPop" title="What the map shows"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3 2.5 8 12 13l9.5-5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="m2.5 12.5 9.5 5 9.5-5M2.5 16.5l9.5 5 9.5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span class="lbl">Layers</span></button>
+        <button class="mapbtn" id="helpBtn" aria-expanded="false" aria-controls="helpPop" aria-label="How to use" title="How to use">?</button>
+      </div>
+    </div>
+    <div class="pop" id="layersPop" role="dialog" aria-label="Map layers" hidden>
+      <h2>On the map</h2>
+      <div class="layers">
+        <label><input type="checkbox" id="lyMine" checked><span class="sw" style="background:var(--line)"></span>Your line</label>
+        <label><input type="checkbox" id="lyTrain" checked><span class="sw" style="background:linear-gradient(90deg,#4f8bff,#ffd23d,#ff4d4d)"></span>AI trainer line (slow to fast)</label>
+        <label><input type="checkbox" id="lyLap" checked><span class="sw" style="background:linear-gradient(90deg,#2fd56f,#ff4d6a)"></span>Recorded lap and braking points</label>
+        <label><input type="checkbox" id="lyRace" checked><span class="sw" style="background:linear-gradient(90deg,#ff5d5d,#4fd18b,#33d1ff)"></span>Test race cars and events</label>
+        <label><input type="checkbox" id="lyAuto" checked><span class="sw" style="background:var(--auto)"></span>Autopilot line now</label>
+        <label><input type="checkbox" id="lyGt4" checked><span class="sw" style="background:#fff"></span>Game AI line points</label>
+        <label id="namesRow"><input type="checkbox" id="lyNames" checked><span class="sw" style="background:#ffe680"></span>Corner names<small id="namesTag"></small></label>
+        <label><input type="checkbox" id="lyWalls" checked><span class="sw" style="background:var(--wall)"></span>Walls</label>
+      </div>
+      <h2>Surfaces</h2>
+      <div class="layers" id="surfaces" role="group" aria-label="Surfaces"></div>
+      <p class="note" id="concreteNote"></p>
+    </div>
+    <div class="pop" id="helpPop" role="dialog" aria-label="How to use" hidden>
+      <h2>How to use</h2>
+      <ul class="help">
+        <li><b>Draw</b>: tap to add a point. It goes into the line where it fits best.</li>
+        <li>Drag any point to move it. Tap one to select it, then <kbd>Delete</kbd>.</li>
+        <li><b>Move</b>: drag to pan. Pinch or scroll to zoom.</li>
+        <li>Turn the map: hold the mouse wheel down and drag sideways, or drag the round handle bottom right. Double-click the handle to straighten.</li>
+        <li>Red parts of your line leave the tarmac.</li>
+        <li>Chevrons show the driving direction. Use Reverse if they point the wrong way.</li>
+        <li>Save, then tell Claude which track: it becomes the autopilot's line and gets a test drive.</li>
+      </ul>
+    </div>
+    <div class="zmenu" id="zoneMenu" role="menu" aria-label="Braking point" hidden>
+      <button role="menuitem" id="zmEdit">Edit braking zone</button>
+      <button role="menuitem" id="zmReset">Reset this zone</button>
+    </div>
+    <div class="bzpanel" id="bzPanel" role="dialog" aria-label="Braking zone" hidden>
+      <div class="bzhead">
+        <b id="bzTitle">Braking zone</b>
+        <button id="bzPrev" aria-label="Previous braking zone">◀</button>
+        <button id="bzNext" aria-label="Next braking zone">▶</button>
+        <button id="bzDone" class="primary">Done</button>
+      </div>
+      <div class="bzpick"><span>A click on the lap sets the</span>
+        <div class="seg" role="group" aria-label="A click on the lap sets"><button id="bzPickB" aria-pressed="true">brake point</button><button id="bzPickT" aria-pressed="false">throttle point</button></div>
+      </div>
+      <div class="bzpick"><span>Each nudge moves it</span>
+        <div class="seg" role="group" aria-label="Each nudge moves it"><button id="bzStepCm" aria-pressed="false">1 cm</button><button id="bzStepDm" aria-pressed="false">10 cm</button><button id="bzStepM" aria-pressed="true">1 m</button></div>
+      </div>
+      <div class="bzrow"><span id="bzBrake">Brake at</span><button id="bzBe">1 m earlier</button><button id="bzBl">1 m later</button></div>
+      <div class="bzrow"><span id="bzThr">Throttle at</span><button id="bzTe">1 m earlier</button><button id="bzTl">1 m later</button></div>
+      <div class="bzinfo" id="bzInfo"></div>
+      <div class="bzfoot"><button id="bzReset">Reset zone</button><span class="status" id="bzStatus"></span></div>
+    </div>
+    <button class="rotate" id="rotate" title="Drag to rotate the map (or drag the map with the mouse wheel held down) · double-click to straighten" aria-label="Rotate the map (arrow keys turn it, double-click straightens)"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="rotDeg">0°</span></button>
+    <div class="readout"><div class="scalebar" id="scalebar"></div><span id="scaletext">100 m</span><span id="cursor"></span></div>
+  </main>
+
+  <aside class="panel">
+    <div class="phead">
+      <h1 class="trackname" id="trackname">Loading…</h1>
+      <div class="meta" id="trackmeta"></div>
+      <div class="status" id="status" role="status"></div>
+    </div>
+
+    <div class="tabs" id="tabs" role="tablist" aria-label="Tools">
+      <button role="tab" id="tab-line" aria-controls="pane-line" aria-selected="true">Line</button>
+      <button role="tab" id="tab-train" aria-controls="pane-train" aria-selected="false" tabindex="-1">Trainer<i class="live" id="trLive" title="Training" hidden></i></button>
+      <button role="tab" id="tab-laps" aria-controls="pane-laps" aria-selected="false" tabindex="-1">Laps<span class="count" id="lapsCount"></span></button>
+      <button role="tab" id="tab-ai" aria-controls="pane-ai" aria-selected="false" tabindex="-1">AI cars</button>
+      <button role="tab" id="tab-races" aria-controls="pane-races" aria-selected="false" tabindex="-1">Races<span class="count" id="racesCount"></span></button>
+    </div>
+
+    <section class="pane" id="pane-line" role="tabpanel" aria-labelledby="tab-line">
+      <div class="group">
+        <h2>Your line</h2>
+        <div class="stats">
+          <div class="stat"><b id="stPoints">0</b><span>points</span></div>
+          <div class="stat"><b id="stLength">–</b><span>line length</span></div>
+          <div class="stat" id="stRoadBox"><b id="stRoad">–</b><span>on tarmac</span></div>
+          <div class="stat" id="stOffBox"><b id="stOff">–</b><span>longest off track</span></div>
+        </div>
+      </div>
+      <div class="group">
+        <h2>Start from</h2>
+        <button id="makeLine" class="primary" title="Work out a racing line from the track's shape: the smoothest path that stays on the tarmac">Create racing line</button>
+        <div class="row">
+          <button id="fromGt4" title="The game's own AI racing line points">Game AI line</button>
+          <button id="fromAuto" title="The line the autopilot drives now">Autopilot line</button>
+          <button id="clearLine">Blank</button>
+        </div>
+      </div>
+      <div class="group">
+        <h2>Edit</h2>
+        <div class="row">
+          <button id="undo">Undo</button>
+          <button id="delPoint" disabled>Delete point</button>
+          <button id="reverse" title="Swap the driving direction">Reverse</button>
+        </div>
+      </div>
+      <div class="group">
+        <h2 id="lastDriveH">Last drive in GT3</h2>
+        <div class="result" id="result">No drive with your line yet.</div>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-train" role="tabpanel" aria-labelledby="tab-train" hidden>
+      <div class="group">
+        <h2>Car</h2>
+        <select id="trCar" aria-label="Car the trainer learns for">
+          <option value="road">Road car (like GT3's B class)</option>
+          <option value="sport">Sports car (A class)</option>
+          <option value="race">Race car (GT500, Le Mans)</option>
+        </select>
+        <details class="aicar carset" id="trSetBox">
+          <summary><b>Settings</b><span class="src" id="trSetName">Default settings</span><small id="trSetSum"></small></summary>
+          <div class="aiset">
+            <label>Grip (g)<input type="number" id="trMu" min="0.5" max="2.5" step="0.05" inputmode="decimal"></label>
+            <label>Power (PS per tonne)<input type="number" id="trPw" min="40" max="900" step="5" inputmode="numeric"></label>
+            <label>Top speed (km/h)<input type="number" id="trVmax" min="80" max="420" step="1" inputmode="numeric"></label>
+            <label>Brakes (× grip)<input type="number" id="trBrake" min="0.8" max="1.5" step="0.01" inputmode="decimal"></label>
+            <button class="wide" id="trSetDefault">Default settings</button>
+          </div>
+        </details>
+        <div class="row">
+          <button class="primary" id="trStart" title="The trainer drives lap after lap in this browser and keeps whatever makes the lap faster">Train</button>
+          <button id="trStop" disabled>Stop</button>
+          <button id="trUse" disabled title="Put the trained line into Your line (then Save sends it to GT3)">Use trained line</button>
+        </div>
+        <button id="trFresh" class="quiet" title="Start again from the smoothest line on the tarmac; the stored fastest line stays until this run beats it">Train from the default line</button>
+      </div>
+      <div class="group">
+        <h2>Progress</h2>
+        <div class="stats">
+          <div class="stat"><b id="trBest">–</b><span>best lap (trainer)</span></div>
+          <div class="stat"><b id="trGen">0</b><span>generations</span></div>
+          <div class="stat"><b id="trTop">–</b><span>top speed</span></div>
+          <div class="stat"><b id="trGain">–</b><span>gained</span></div>
+        </div>
+        <svg class="trchart" id="trChart" viewBox="0 0 300 46" preserveAspectRatio="none" aria-label="Best lap by generation"></svg>
+        <div class="status" id="trStatus">Learns a fast line for the car above, on this device: no internet needed once the page is open.</div>
+      </div>
+      <div class="group">
+        <h2>Fastest lines on this track</h2>
+        <div class="times" id="trLib"><p class="dim">None yet.</p></div>
+      </div>
+      <p class="note">Each car keeps its own settings and its own fastest line on each track: a line is only replaced by a faster one, timed with the same settings. A car with no line yet starts from another car's line. Each generation the trainer tries 24 changes to its best line and keeps the fastest. Its lap time comes from its own simple car (grip, power, braking, drag; no hills), so use it to compare lines, not as a GT3 lap time.</p>
+    </section>
+
+    <section class="pane" id="pane-laps" role="tabpanel" aria-labelledby="tab-laps" hidden>
+      <div class="group">
+        <h2>Play a recorded lap</h2>
+        <select id="lapPick" aria-label="Recorded lap"><option value="">No recorded laps on this track yet</option></select>
+        <div class="row">
+          <button id="lapPlay" disabled>Play</button>
+          <button id="lapRate" disabled title="Playback speed">1×</button>
+          <button id="lapUse" disabled title="Make this lap's path your editable line">Use as my line</button>
+        </div>
+        <button id="lapZones" class="quiet" disabled title="Move where this lap brakes and gets back on the throttle (or right-click a B on the map)">Edit braking zones</button>
+        <div class="tele" id="tele" hidden>
+          <div class="tele-row"><span id="teTime">0.000</span><span id="teSpeed">0 km/h</span><span id="teGear">G1</span></div>
+          <div class="meter"><i id="teThr" style="background:var(--good)"></i></div>
+          <div class="meter"><i id="teBrk" style="background:var(--bad)"></i></div>
+          <div class="legend-row" id="lapLegend"></div>
+        </div>
+        <div class="opts">
+          <label for="lapColour">Colour the lap by
+            <select id="lapColour">
+              <option value="pedals">Throttle and brake</option>
+              <option value="speed">Speed</option>
+            </select>
+          </label>
+          <label for="lapDetail">Playback detail
+            <select id="lapDetail">
+              <option value="0">Every frame</option>
+              <option value="0.01">1 cm</option>
+              <option value="0.1">10 cm</option>
+              <option value="0.5">50 cm</option>
+              <option value="1">1 m</option>
+              <option value="5">5 m</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="group">
+        <h2>Lap times on this track</h2>
+        <div class="times" id="times"><p class="dim">No laps on this track yet.</p></div>
+      </div>
+      <div class="group">
+        <h2 id="lapsFromH">Add laps from GT3</h2>
+        <button id="lapGame" class="primary" hidden title="The new lap files in the game's recordings folder (F10 records them)">Add laps from the game</button>
+        <button id="lapAdd" title="The lap files the game writes while recording (F10): recordings folder, .csv">Add recorded laps…</button>
+        <input type="file" id="lapFile" accept=".csv,text/csv" multiple hidden>
+        <div class="status" id="lapStatus">Press F10 in the game to record your laps, then add the files here (the game's recordings folder). You can add the whole folder's files: only whole laps are kept (a first lap with its grid or rolling start), never a lap the recording stopped or joined part way through.</div>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-races" role="tabpanel" aria-labelledby="tab-races" hidden>
+      <div class="group">
+        <h2>Test race</h2>
+        <select id="racePick" aria-label="Test race"><option value="">No test races on this track yet</option></select>
+        <div class="row">
+          <button id="racePlay" disabled>Play</button>
+          <button id="raceRate" disabled title="Playback speed">1×</button>
+        </div>
+        <input type="range" id="raceTime" min="0" max="1000" value="0" step="1" disabled aria-label="Race time">
+        <div class="tele-row"><span id="raceClock">0:00.0</span><span id="raceInfo" class="dim"></span></div>
+      </div>
+      <div class="group" id="raceCarsBox" hidden>
+        <h2>Cars</h2>
+        <div class="racecars" id="raceCars"></div>
+      </div>
+      <div class="group" id="raceEventsBox" hidden>
+        <h2>Events</h2>
+        <div class="raceevents" id="raceEvents"></div>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-ai" role="tabpanel" aria-labelledby="tab-ai" hidden>
+      <div class="group">
+        <h2>AI cars 1–5</h2>
+        <div class="aicars" id="aicars"></div>
+        <button id="aiSave" class="primary">Send to AI cars</button>
+        <div class="status" id="aiStatus"></div>
+      </div>
+      <div class="group">
+        <h2>Drivers</h2>
+        <div class="aicars" id="drivers"></div>
+        <div class="row">
+          <button id="drvAdd">Add driver</button>
+          <button id="drvReset" title="Put back the eight drivers the page came with">Default drivers</button>
+        </div>
+        <div class="status" id="drvStatus"></div>
+      </div>
+      <p class="note" id="aiNoteGt4" hidden>In GT4: give AI cars 1–5 drivers and press Send to AI cars. GT4 shows their names from the next race in every race: the timing tower set to Driver names, the telemetry and phone pages, and the launcher's Race Lab tab (AI car 1 is the first car in the race that isn't yours, and so on). GT4's own AI still drives every car, so the six settings don't change how they drive yet.</p>
+      <p class="note" id="aiNoteGt3">Give a car a driver and it drives with that driver's personality; change a driver here and every car they drive follows. Pace is the share of the line's speeds they aim for. Speed and Braking change their pace and braking points a little every lap (how consistent they are); Mistakes adds late braking, missed apexes and early throttle; Passing sets how hard they attack and defend; Contact sets how much room they leave other cars (careful leaves the most).</p>
+    </section>
+
+    <div class="savebar">
+      <div class="saveinfo"><b>Your line</b><span id="saveInfo">no points yet</span></div>
+      <button class="primary" id="save" title="Saves your line for this track; then tell Claude which track to drive it in GT3">Save line for Claude</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const COLORS = { 0: "#8a8f98", 1: "#c0504d", 2: "#3f7a3a", 3: "#b59a63", 4: "#d8c48a", 5: "#8a6a40", 7: "#6a7a50", 8: "#7a5a30", 9: "#7d8796",
+    10: "#e6e4dc", 11: "#b9b1a2", 12: "#4f8a47" };
+  // GT3's surface codes (the runway's faces; the wheels report the same numbers in a race).
+  // GT4's tracks keep GT4's own: 10 painted lines, 11 concrete, 12 grass verge (GT3 has none of them).
+  const SURFACES = [
+    { key: "tarmac", name: "Tarmac", codes: [0] },
+    { key: "concrete", name: "Concrete", codes: [11], gt4: true, note: "GT4's code 11 (the Nordschleife's Karussell, Tahiti Maze)" },
+    { key: "paint", name: "Painted lines", codes: [10], gt4: true, note: "GT4's code 10" },
+    { key: "kerb", name: "Kerbs", codes: [1] },
+    { key: "grass", name: "Grass", codes: [2, 12] },
+    { key: "sand", name: "Sand", codes: [3] },
+    { key: "gravel", name: "Gravel", codes: [4] },
+    { key: "dirt", name: "Dirt", codes: [5, 8] },
+    { key: "other", name: "Other road surface", codes: [7, 9], note: "codes 7 and 9, not identified yet" },
+  ];
+  const surfOn = {};
+  for (const g of SURFACES) surfOn[g.key] = true;
+  try { Object.assign(surfOn, JSON.parse(localStorage.getItem("surfaces") || "{}")); } catch (e) {}
+  const groupOf = (c) => (SURFACES.find((g) => g.codes.includes(+c)) || SURFACES[SURFACES.length - 1]).key;
+  const $ = (id) => document.getElementById(id);
+  // served by the GT4 launcher (gt4RaceLab.exe says so): GT4's own courses are the drivable ones there
+  const GT4_HOST = !!(window.claude && window.claude.game === "gt4");
+  if (GT4_HOST) addEventListener("DOMContentLoaded", () => { const a = document.getElementById("aiNoteGt4"), b = document.getElementById("aiNoteGt3"); if (a) a.hidden = false; if (b) b.hidden = true; });
+  const GT4_ONLY = GT4_HOST && !window.claude.allTracks;  // (gt4RaceLab.exe: GT4's courses only unless GT4_RACELAB_TRACKS=all)
+  // what happened on this viewer, for Claude (diag/<id> in the shared store when it is there)
+  const VERSION = 49;
+  const diag = { v: VERSION, at: new Date().toISOString(), ua: navigator.userAgent, page: location.origin + location.pathname, frame: innerWidth + "x" + innerHeight, events: [] };
+  const diagId = "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  function note(s) { diag.events.push(Math.round(performance.now()) + "ms " + s); if (diag.events.length > 80) diag.events.splice(0, 20); }
+  window.addEventListener("error", (e) => { note("error " + (e.message || e) + " @" + (e.lineno || "?")); try { status("Page error: " + (e.message || "unknown"), true); } catch (x) {} });
+  window.addEventListener("unhandledrejection", (e) => { note("rejection " + (e.reason && (e.reason.message || e.reason.code) || e.reason)); });
+  const stage = $("stage"), canvas = $("map"), ctx = canvas.getContext("2d");
+  const base = document.createElement("canvas"), bctx = base.getContext("2d");
+
+  let index = [], T = null;              // track list, current track
+  let view = { cx: 0, cz: 0, s: 1, r: 0 }; // world point at the centre, pixels per metre, rotation (radians)
+  let baseView = null;                   // the view the cached layer was drawn at
+  let points = [], selected = -1, undoStack = [];
+  let spline = [];                       // [{x, z, seg, ok}] samples about every metre
+  let mode = "draw", dirty = true, baseDirty = true, idleTimer = 0;
+  let db = null, resultUnsub = null, savedAt = null;
+  const layers = { walls: true, auto: true, gt4: true, names: true, mine: true, lap: true, race: true, train: true };
+
+  // ---------------------------------------------------------------- data
+  function b64(s, Type) {
+    const bin = atob(s), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return new Type(buf);
+  }
+  async function loadTrack(id) {
+    $("trackname").textContent = "Loading…";
+    const t0 = performance.now();
+    note("fetch " + id);
+    let res;
+    try { res = await fetch("tracks/" + id + ".json"); }
+    catch (e) { note("fetch " + id + " failed: " + (e && e.message)); throw e; }
+    note("fetch " + id + " HTTP " + res.status + " " + (res.headers.get("content-type") || "") + " " + (res.headers.get("content-length") || "?") + " bytes, " + (res.redirected ? "redirected to " + res.url : "url " + res.url));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const text = await res.text();
+    note("read " + id + " " + text.length + " chars in " + Math.round(performance.now() - t0) + " ms");
+    let raw;
+    try { raw = JSON.parse(text); } catch (e) { note("parse " + id + " failed: " + text.slice(0, 120)); throw new Error("the file isn't track data"); }
+    // vertices: Int16 at raw.q metres from the centre raw.c
+    const vi = b64(raw.verts, Int16Array), v = new Float32Array(vi.length);
+    for (let i = 0; i < vi.length; i += 2) { v[i] = raw.c[0] + vi[i] * raw.q; v[i + 1] = raw.c[1] + vi[i + 1] * raw.q; }
+    const IX = raw.idx === "u32" ? Uint32Array : Uint16Array;
+    const surf = {}, roadTris = [];
+    const codes = Object.keys(raw.tris).map(Number);
+    const roadCodes = codes.includes(0) ? [0, 1, 10, 11] : codes.filter((c) => c === 5 || c === 8 || c === 1);  // (10, 11: GT4's painted lines, concrete)
+    for (const c of codes) {
+      const ix = b64(raw.tris[c], IX), p = new Path2D();
+      for (let i = 0; i < ix.length; i += 3) {
+        const a = ix[i] * 2, b = ix[i + 1] * 2, d = ix[i + 2] * 2;
+        p.moveTo(v[a], v[a + 1]); p.lineTo(v[b], v[b + 1]); p.lineTo(v[d], v[d + 1]); p.closePath();
+        if (roadCodes.includes(c)) roadTris.push(v[a], v[a + 1], v[b], v[b + 1], v[d], v[d + 1]);
+      }
+      surf[c] = p;
+    }
+    const walls = new Path2D();
+    for (const w of raw.walls) {
+      const f = b64(w, Int16Array), X = (i) => raw.c[0] + f[i] * raw.q, Z = (i) => raw.c[1] + f[i + 1] * raw.q;
+      walls.moveTo(X(0), Z(0));
+      for (let i = 2; i < f.length; i += 2) walls.lineTo(X(i), Z(i));
+    }
+    const auto = new Path2D();
+    raw.autopilot.forEach((p, i) => (i ? auto.lineTo(p[0], p[1]) : auto.moveTo(p[0], p[1])));
+    if (raw.autopilot.length) auto.closePath();
+    // road lookup grid (10 m cells)
+    const grid = new Map();
+    for (let t = 0; t < roadTris.length; t += 6) {
+      const xs = [roadTris[t], roadTris[t + 2], roadTris[t + 4]], zs = [roadTris[t + 1], roadTris[t + 3], roadTris[t + 5]];
+      for (let gx = Math.floor(Math.min(...xs) / 10); gx <= Math.floor(Math.max(...xs) / 10); gx++)
+        for (let gz = Math.floor(Math.min(...zs) / 10); gz <= Math.floor(Math.max(...zs) / 10); gz++) {
+          const k = gx + "," + gz;
+          (grid.get(k) || grid.set(k, []).get(k)).push(t);
+        }
+    }
+    return { ...raw, surf, walls, auto, grid, roadTris };
+  }
+  function onRoad(x, z) {
+    const list = T.grid.get(Math.floor(x / 10) + "," + Math.floor(z / 10));
+    if (!list) return false;
+    const r = T.roadTris;
+    for (const t of list) {
+      const ax = r[t], az = r[t + 1], bx = r[t + 2], bz = r[t + 3], cx = r[t + 4], cz = r[t + 5];
+      const d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz);
+      const d2 = (x - cx) * (bz - cz) - (bx - cx) * (z - cz);
+      const d3 = (x - ax) * (cz - az) - (cx - ax) * (z - az);
+      if (!((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- line
+  function catmull(p0, p1, p2, p3, n, out, seg) {
+    const tj = (ti, a, b) => ti + Math.sqrt(Math.max(1e-6, Math.hypot(b[0] - a[0], b[1] - a[1])));
+    const t0 = 0, t1 = tj(t0, p0, p1), t2 = tj(t1, p1, p2), t3 = tj(t2, p2, p3);
+    const L = (a, b, ta, tb, t) => { const w = (t - ta) / (tb - ta); return [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w]; };
+    for (let k = 0; k < n; k++) {
+      const t = t1 + (t2 - t1) * k / n;
+      const a1 = L(p0, p1, t0, t1, t), a2 = L(p1, p2, t1, t2, t), a3 = L(p2, p3, t2, t3, t);
+      const b1 = L(a1, a2, t0, t2, t), b2 = L(a2, a3, t1, t3, t);
+      const c = L(b1, b2, t1, t2, t);
+      out.push({ x: c[0], z: c[1], seg });
+    }
+  }
+  function rebuildSpline() {
+    spline = [];
+    const n = points.length;
+    if (n >= 3) {
+      for (let i = 0; i < n; i++) {
+        const p0 = points[(i - 1 + n) % n], p1 = points[i], p2 = points[(i + 1) % n], p3 = points[(i + 2) % n];
+        const len = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+        catmull(p0, p1, p2, p3, Math.max(2, Math.ceil(len)), spline, i);
+      }
+    } else {
+      points.forEach((p, i) => spline.push({ x: p[0], z: p[1], seg: i }));
+    }
+    let len = 0, on = 0, off = 0, run = 0, worst = 0;
+    for (let i = 0; i < spline.length; i++) {
+      const a = spline[i], b = spline[(i + 1) % spline.length];
+      const d = n >= 3 ? Math.hypot(b.x - a.x, b.z - a.z) : 0;
+      a.ok = onRoad(a.x, a.z);
+      len += d;
+      if (a.ok) { on += d; run = 0; } else { off += d; run += d; worst = Math.max(worst, run); }
+    }
+    $("stPoints").textContent = n;
+    $("stLength").textContent = n >= 3 ? Math.round(len) + " m" : "–";
+    $("stRoad").textContent = n >= 3 ? (100 * on / Math.max(1, len)).toFixed(1) + "%" : "–";
+    $("stOff").textContent = n >= 3 ? Math.round(worst) + " m" : "–";
+    $("stRoadBox").className = "stat " + (n >= 3 ? (off < 1 ? "ok" : "warn") : "");
+    $("stOffBox").className = "stat " + (n >= 3 ? (worst < 1 ? "ok" : "warn") : "");
+    // the same, short, beside Save (under every tab)
+    const si = $("saveInfo"); si.textContent = "";
+    if (n < 3) si.textContent = n ? n + " point" + (n > 1 ? "s" : "") + ": place at least 3" : "no points yet";
+    else {
+      const road = document.createElement("span"); road.className = off < 1 ? "" : "off"; road.textContent = $("stRoad").textContent + " on tarmac";
+      si.append(n + " points · " + Math.round(len) + " m · ", road);
+    }
+    $("delPoint").disabled = $("mapDel").disabled = selected < 0;
+    dirty = true;
+  }
+  function pushUndo() { undoStack.push(points.map((p) => p.slice())); if (undoStack.length > 200) undoStack.shift(); }
+  function setPoints(p, keepUndo) { if (!keepUndo) pushUndo(); points = p; selected = -1; rebuildSpline(); saveDraft(); }
+  function simplify(pts, tol) {  // Douglas-Peucker on an open polyline
+    if (pts.length < 3) return pts;
+    const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); let best = -1, bi = -1;
+      const ax = pts[a][0], az = pts[a][1], dx = pts[b][0] - ax, dz = pts[b][1] - az, L = Math.hypot(dx, dz) || 1;
+      for (let i = a + 1; i < b; i++) { const d = Math.abs((pts[i][0] - ax) * dz - (pts[i][1] - az) * dx) / L; if (d > best) { best = d; bi = i; } }
+      if (best > tol) { keep[bi] = 1; stack.push([a, bi], [bi, b]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  }
+  function insertPoint(p) {
+    pushUndo();
+    if (points.length < 3) { points.push(p); selected = points.length - 1; }
+    else {
+      let best = Infinity, bi = 0;
+      for (let i = 0; i < points.length; i++) {
+        const a = points[i], b = points[(i + 1) % points.length];
+        const c = Math.hypot(p[0] - a[0], p[1] - a[1]) + Math.hypot(b[0] - p[0], b[1] - p[1]) - Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (c < best) { best = c; bi = i; }
+      }
+      points.splice(bi + 1, 0, p); selected = bi + 1;
+    }
+    rebuildSpline(); saveDraft();
+  }
+
+  // ---------------------------------------------------------------- drawing
+  function resize() {
+    const dpr = window.devicePixelRatio || 1, r = stage.getBoundingClientRect();
+    for (const c of [canvas, base]) { c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr)); }
+    baseDirty = true; dirty = true;
+    if (fitPending && r.width >= 40 && r.height >= 40) fit();
+  }
+  function worldToScreen(x, z) {
+    const r = stage.getBoundingClientRect(), c = Math.cos(view.r), n = Math.sin(view.r), dx = (x - view.cx) * view.s, dz = (z - view.cz) * view.s;
+    return [dx * c - dz * n + r.width / 2, dx * n + dz * c + r.height / 2];
+  }
+  // a move on screen as a move on the map (the map may be turned)
+  function screenToMap(dsx, dsy) { const c = Math.cos(view.r), n = Math.sin(view.r); return [(dsx * c + dsy * n) / view.s, (-dsx * n + dsy * c) / view.s]; }
+  function screenToWorld(sx, sy) { const r = stage.getBoundingClientRect(), [dx, dz] = screenToMap(sx - r.width / 2, sy - r.height / 2); return [dx + view.cx, dz + view.cz]; }
+  function applyWorld(c, v) {
+    const dpr = window.devicePixelRatio || 1, r = stage.getBoundingClientRect();
+    const a = dpr * v.s * Math.cos(v.r || 0), b = dpr * v.s * Math.sin(v.r || 0);
+    c.setTransform(a, b, -b, a, dpr * r.width / 2 - (a * v.cx - b * v.cz), dpr * r.height / 2 - (b * v.cx + a * v.cz));
+  }
+  function drawBase() {
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.fillStyle = "#0d0f12"; bctx.fillRect(0, 0, base.width, base.height);
+    if (!T) return;
+    applyWorld(bctx, view);
+    for (const c in T.surf) if (surfOn[groupOf(c)]) { bctx.fillStyle = COLORS[c] || "#4a6b45"; bctx.fill(T.surf[c]); }
+    if (layers.walls) { bctx.strokeStyle = "#ffd60a"; bctx.lineWidth = 1.4 / view.s; bctx.stroke(T.walls); }
+    baseView = { ...view }; baseDirty = false;
+  }
+  function draw() {
+    if (baseView && baseView.r !== view.r) baseDirty = true;
+    if (baseDirty) drawBase();
+    const dpr = window.devicePixelRatio || 1, r = stage.getBoundingClientRect();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#0d0f12"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (!T || !baseView) return;  // no track yet (its file is still on the way)
+    // cached layer, moved to the current view while a gesture runs
+    const k = view.s / baseView.s;
+    const rc = Math.cos(view.r), rn = Math.sin(view.r), ddx = (baseView.cx - view.cx) * view.s, ddz = (baseView.cz - view.cz) * view.s;
+    const ox = dpr * (ddx * rc - ddz * rn + r.width / 2 - k * r.width / 2);
+    const oy = dpr * (ddx * rn + ddz * rc + r.height / 2 - k * r.height / 2);
+    ctx.drawImage(base, ox, oy, base.width * k, base.height * k);
+    if (!T) return;
+    applyWorld(ctx, view);
+    // editing a braking zone: the other lines faint, so the recorded lap stands out
+    const others = bz ? 0.18 : 1;
+    ctx.globalAlpha = others;
+    if (layers.auto) { ctx.strokeStyle = "rgba(51,209,255,.9)"; ctx.lineWidth = 2 / view.s; ctx.stroke(T.auto); }
+    // start line marker (the autopilot line's first step, else the first progress line)
+    const s0 = T.autopilot[0] || (T.progress[0] && T.progress[0].slice(0, 2));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (s0) {
+      const [x, y] = worldToScreen(s0[0], s0[1]);
+      ctx.fillStyle = "#fff"; ctx.font = "600 12px " + getComputedStyle(document.body).getPropertyValue("--mono");
+      ctx.fillText("START", x + 8, y - 8);
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill();
+    }
+    if (layers.gt4) {
+      ctx.fillStyle = "#fff";
+      for (const p of T.gt4) { const [x, y] = worldToScreen(p[0], p[1]); ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fill(); }
+    }
+    drawTrainer();
+    // your line: runs coloured by on / off the tarmac
+    if (layers.mine && spline.length > 1) {
+      ctx.lineWidth = 3.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
+      const closed = points.length >= 3, m = spline.length;
+      let i = 0;
+      while (i < (closed ? m : m - 1)) {
+        const ok = spline[i].ok;
+        ctx.beginPath(); ctx.strokeStyle = ok ? "#ff8a3d" : "#ff4d6a";
+        let [x, y] = worldToScreen(spline[i].x, spline[i].z); ctx.moveTo(x, y);
+        while (i < (closed ? m : m - 1) && spline[i].ok === ok) {
+          const b = spline[(i + 1) % m]; [x, y] = worldToScreen(b.x, b.z); ctx.lineTo(x, y); i++;
+        }
+        ctx.stroke();
+      }
+      // direction chevrons every ~120 px of screen
+      if (closed) {
+        let acc = 0;
+        for (let j = 0; j < m; j++) {
+          const a = spline[j], b = spline[(j + 1) % m];
+          const [ax, ay] = worldToScreen(a.x, a.z), [bx, by] = worldToScreen(b.x, b.z);
+          acc += Math.hypot(bx - ax, by - ay);
+          if (acc > 120) {
+            acc = 0;
+            const ang = Math.atan2(by - ay, bx - ax);
+            ctx.save(); ctx.translate(bx, by); ctx.rotate(ang);
+            ctx.strokeStyle = "#1a1208"; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(-4, -4); ctx.lineTo(1, 0); ctx.lineTo(-4, 4); ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+    }
+    const pointsOfMine = () => { if (layers.mine) points.forEach((p, i) => {
+      const [x, y] = worldToScreen(p[0], p[1]);
+      ctx.beginPath(); ctx.arc(x, y, i === selected ? 9 : 6.5, 0, 7);
+      ctx.fillStyle = "#ff8a3d"; ctx.fill();
+      ctx.lineWidth = i === selected ? 3 : 2; ctx.strokeStyle = i === selected ? "#fff" : "#1a1208"; ctx.stroke();
+    }); };
+    if (bz) pointsOfMine();  // (under the lap being edited)
+    ctx.globalAlpha = 1;
+    drawDrive(); syncGlows();
+    if (!bz) { drawRace(); pointsOfMine(); }  // (a test race's cars aren't drawn while a zone is edited)
+    ctx.globalAlpha = 1;
+    drawNames();
+    // scale bar
+    const target = 110 / view.s, pow = Math.pow(10, Math.floor(Math.log10(target)));
+    const nice = [1, 2, 5, 10].map((m) => m * pow).find((v) => v >= target * 0.6) || pow * 10;
+    $("scalebar").style.width = Math.round(nice * view.s) + "px";
+    $("scaletext").textContent = nice >= 1000 ? nice / 1000 + " km" : nice + " m";
+  }
+  // ---------------------------------------------------------------- corner names
+  // tracks/names.json: {trackId: [{n, at (lap metres), kind: corner | section | straight | landmark}]}
+  let NAMES = {};
+  function lapPoint(m) {  // the track centre at m lap metres (the progress lines), and its direction
+    const P = T.progress, n = P.length, lap = T.lap;
+    if (n < 2) return null;
+    m = ((m % lap) + lap) % lap;
+    // the last progress line at or before m; before the first one, the stretch from the last one round the lap
+    let i = n - 1;
+    if (m >= P[0][2]) { i = 0; while (i < n - 1 && P[i + 1][2] <= m) i++; }
+    const a = P[i], b = P[(i + 1) % n], span = ((b[2] - a[2]) % lap + lap) % lap || lap, f = (((m - a[2]) % lap) + lap) % lap / span;
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  }
+  function drawNames() {
+    const list = NAMES[T.id];
+    if (!layers.names || !list) return;
+    const mono = getComputedStyle(document.body).getPropertyValue("--body");
+    const R = stage.getBoundingClientRect(), placed = [];
+    for (const c of list) {
+      const p = lapPoint(c.at), p0 = lapPoint(c.at - 25), p1 = lapPoint(c.at + 25);
+      if (!p || !p0 || !p1) continue;
+      const [x, y] = worldToScreen(p[0], p[1]), [x0, y0] = worldToScreen(p0[0], p0[1]), [x1, y1] = worldToScreen(p1[0], p1[1]);
+      if (x < 0 || y < 0 || x > R.width || y > R.height) continue;  // off screen: gone
+      // out to the outside of the bend (straights: to the left of the road)
+      let tx = x1 - x0, ty = y1 - y0; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+      const bend = (x - x0) * (y1 - y) - (y - y0) * (x1 - x);  // + = turning right on screen
+      const side = bend > 0 ? 1 : -1;
+      const nx = ty * side, ny = -tx * side;
+      const lx = x + nx * 30, ly = y + ny * 30;
+      const kind = c.kind || "corner";
+      ctx.font = (kind === "corner" ? "600 13px " : "italic 500 12px ") + mono;
+      const w = ctx.measureText(c.n).width + 12, h = 20;
+      // inside the map, and clear of the labels already drawn (moved down a row at a time)
+      let bx = lx + (nx >= 0 ? 0 : -w), by = ly - h / 2;  // moves with its point (slides off the edge with it)
+      for (let k = 0; k < 6 && placed.some((q) => bx < q[0] + q[2] && q[0] < bx + w && by < q[1] + q[3] + 2 && q[1] < by + h + 2); k++)
+        by += (ny >= 0 ? 1 : -1) * (h + 3);
+      placed.push([bx, by, w, h]);
+      const ex = Math.min(Math.max(bx, x), bx + w), ey = Math.min(Math.max(by, y), by + h);
+      ctx.strokeStyle = "rgba(233,235,239,.7)"; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.fillStyle = "#e9ebef"; ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
+      ctx.fillStyle = kind === "corner" ? "rgba(13,15,18,.88)" : "rgba(13,15,18,.7)";
+      ctx.fillRect(bx, by, w, h);
+      ctx.strokeStyle = kind === "corner" ? "rgba(255,214,10,.75)" : "rgba(168,174,185,.5)"; ctx.strokeRect(bx + .5, by + .5, w - 1, h - 1);
+      ctx.fillStyle = kind === "corner" ? "#ffe680" : "#c8ccd4";
+      ctx.fillText(c.n, bx + 6, by + 14);
+    }
+  }
+  function showNames() {
+    const list = T && NAMES[T.id];
+    $("namesTag").textContent = list ? list.length + " here" : "none for this track yet";
+    $("namesRow").classList.toggle("absent", !list);
+  }
+
+  // ---------------------------------------------------------------- recorded laps
+  let drives = [], drive = null, play = { on: false, t: 0, rate: 1, last: 0 };
+  const C = { t: 0, lap: 1, x: 2, z: 3, v: 4, gear: 5, thr: 6, brk: 7 };
+  function speedColor(v, lo, hi) {
+    const f = Math.max(0, Math.min(1, (v - lo) / Math.max(1, hi - lo)));
+    const stops = [[79, 139, 255], [255, 210, 61], [255, 77, 77]];
+    const s = f < 0.5 ? 0 : 1, k = f < 0.5 ? f * 2 : (f - 0.5) * 2;
+    const a = stops[s], b = stops[s + 1];
+    return "rgb(" + a.map((c, i) => Math.round(c + (b[i] - c) * k)).join(",") + ")";
+  }
+  // the lap at the chosen playback detail: a row once the car has moved that far (0: every frame)
+  let detail = 0, shownFor = null, shownRows = null;
+  function shown() {
+    if (shownFor === drive && shownRows && shownRows.detail === detail) return shownRows;
+    const r = drive.rows;
+    let out = r;
+    if (detail > 0) {
+      out = [r[0]];
+      for (let i = 1; i < r.length; i++) {
+        const p = out[out.length - 1];
+        if (Math.hypot(r[i][C.x] - p[C.x], r[i][C.z] - p[C.z]) >= detail || i === r.length - 1) out.push(r[i]);
+      }
+    }
+    out.detail = detail; shownFor = drive; shownRows = out;
+    return out;
+  }
+  $("lapDetail").onchange = (e) => { detail = parseFloat(e.target.value) || 0; dirty = true; };
+  function driveSample(t) {
+    const r = shown();
+    let lo = 0, hi = r.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (r[m][C.t] <= t) lo = m; else hi = m; }
+    const a = r[lo], b = r[hi], w = b[C.t] > a[C.t] ? Math.max(0, Math.min(1, (t - a[C.t]) / (b[C.t] - a[C.t]))) : 0;
+    const L = (i) => a[i] + (b[i] - a[i]) * w;
+    return { x: L(C.x), z: L(C.z), v: L(C.v), thr: L(C.thr), brk: L(C.brk), gear: a[C.gear], ang: Math.atan2(b[C.z] - a[C.z], b[C.x] - a[C.x]) };
+  }
+  // ---------------------------------------------------------------- braking zones (and editing them)
+  // A braking zone: the brake past 30 % until it comes off (presses less than 30 m apart are one zone: the autopilot
+  // pulses the brake), its slowest point, and where the throttle is back past 60 % after it; found on every recorded
+  // frame of the lap. Edits: drives/<id>.edits = {zones: {"<lap m of the recorded brake point, 0.1 m>": {brakeAt,
+  // throttleAt}}} (lap metres). The edited speeds: the recorded ones held up to a later brake point (or slowing from an
+  // earlier one), then an even slowing to the zone's slowest point; the recorded pick-up moved with the throttle point.
+  // GT4-WORK tools/ai_line_from_lap.py does the same for the AI cars' lines. The recording itself never changes.
+  let bz = null;       // editing a zone: {k: its index, pick: "brake" | "throttle"}
+  let badgeHits = [];  // where the "B"s were drawn: [x, y, zone index]
+  function zonesOf(d) {
+    if (d.zones) return d.zones;
+    const r = d.rows, z = [], li = lineIndex(r);
+    for (let i = 1; i < r.length; i++)
+      if (r[i][C.brk] >= 0.3 && r[i - 1][C.brk] < 0.3) {
+        let j = i, m = i;
+        while (j < r.length - 1 && r[j][C.brk] >= 0.1) { if (r[j][C.v] < r[m][C.v]) m = j; j++; }
+        const last = z[z.length - 1];
+        if (last && r[i][C.lap] - r[last.b][C.lap] < 30 && r[i][C.lap] >= r[last.b][C.lap]) { last.b = j; if (r[m][C.v] < r[last.m][C.v]) last.m = m; }
+        else z.push({ a: i, b: j, m });
+        i = j;
+      }
+    z.forEach((q) => {
+      let t = q.m;
+      while (t < r.length - 1 && r[t][C.thr] < 0.6 && t - q.m < 900) t++;
+      q.t = r[t][C.thr] >= 0.6 ? t : q.b;
+      q.key = r[q.a][C.lap].toFixed(1);
+      q.editable = q.a > li;  // (a first lap's start, before the line, isn't part of the lap's line)
+    });
+    // how far each zone's points can move: back to the last zone's throttle point, on to the next brake point
+    z.forEach((q, k) => { q.from = k ? Math.min(z[k - 1].t, q.a - 1) : li; q.to = k < z.length - 1 ? z[k + 1].a : r.length - 1; });
+    return (d.zones = z);
+  }
+  function zoneEdit(d, q) {
+    const z = d.edits && d.edits.zones;
+    if (!z) return null;
+    for (const k in z) if (Math.abs(+k - +q.key) < 1) return z[k];
+    return null;
+  }
+  // the lap's speeds with its edits (every recorded frame), the pedal colours they change, each zone's points now,
+  // and the lap time gained (from the line)
+  function editedLap(d) {
+    const sig = JSON.stringify((d.edits && d.edits.zones) || {});
+    if (d.ed && d.ed.sig === sig) return d.ed;
+    const r = d.rows, L = (i) => r[i][C.lap], v = r.map((q) => q[C.v]), band = new Int8Array(r.length).fill(-1);
+    const firstAt = (lapM, lo, hi) => { for (let i = lo; i <= hi; i++) if (L(i) >= lapM) return i; return hi; };  // the first row at or past
+    const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+    const recAt = (lapM, lo, hi) => {  // the recorded speed at lap metres (rows lo..hi)
+      if (lapM <= L(lo)) return r[lo][C.v];
+      for (let i = lo; i < hi; i++)
+        if (L(i + 1) >= lapM) { const f = (lapM - L(i)) / Math.max(1e-6, L(i + 1) - L(i)); return r[i][C.v] + (r[i + 1][C.v] - r[i][C.v]) * f; }
+      return r[hi][C.v];
+    };
+    const views = [];
+    for (const q of zonesOf(d)) {
+      // the brake / throttle points at their exact lap metres (between recorded frames: they are 0.3-1.5 m apart at
+      // speed); each edit changes only its own part: the brake point the slowing in, the throttle point the pick-up
+      const e = q.editable ? zoneEdit(d, q) : null, vmin = r[q.m][C.v];
+      const eb = e && e.brakeAt != null, et = e && e.throttleAt != null;
+      const bAt = eb ? clamp(e.brakeAt, L(q.from + 1), L(Math.max(q.from + 1, q.m - 2))) : L(q.a);
+      const tAt = et ? clamp(e.throttleAt, L(q.m), L(Math.max(q.m, q.to - 1))) : L(q.t);
+      const A1 = eb ? firstAt(bAt, q.from + 1, Math.max(q.from + 1, q.m - 2)) : q.a;
+      const T1 = et ? firstAt(tAt, q.m, Math.max(q.m, q.to - 1)) : q.t;
+      const vS = bAt > L(q.a) ? r[q.a][C.v] : recAt(bAt, q.from, q.m);
+      const dec = Math.max(0, (vS * vS - vmin * vmin) / (2 * Math.max(1, L(q.m) - bAt)));
+      const decRec = Math.max(0, (r[q.a][C.v] ** 2 - vmin * vmin) / (2 * Math.max(1, L(q.m) - L(q.a))));
+      if (eb) {
+        // the recorded slowing, squeezed (later) or stretched (earlier) to run from the new brake point to the slowest
+        // point: unmoved, it is the recording itself; braking later holds the speed up to the new point; braking earlier
+        // never goes faster than the recording did
+        const span = Math.max(0.5, L(q.m) - bAt), from = (x) => L(q.a) + (x - bAt) * (L(q.m) - L(q.a)) / span;
+        for (let i = q.a; i < q.m && L(i) < bAt; i++) { v[i] = vS; band[i] = 2; }  // braking later: still on the throttle there
+        for (let i = A1; i <= q.m; i++) {
+          const s = recAt(from(L(i)), q.a, q.m);
+          v[i] = bAt < L(q.a) ? Math.min(r[i][C.v], s) : s;
+          if (v[i] < r[i][C.v] - 0.05 || i >= q.a) band[i] = 3;
+        }
+      }
+      if (et) {
+        const dl = tAt - L(q.t);
+        if (dl > 0) for (let i = q.m + 1; i < q.to; i++) { v[i] = Math.min(v[i], recAt(L(i) - dl, q.a, q.to)); if (i < T1 && r[i][C.brk] < 0.1) band[i] = 0; }
+        else if (dl < 0) for (let i = T1; i < q.to; i++) { v[i] = Math.max(v[i], recAt(L(i) - dl, q.a, q.to)); if (i < q.t) band[i] = 2; }
+      }
+      // where the points are on the map (between the frames either side)
+      const place = (lapM, i) => {
+        if (i <= 0) return [r[i][C.x], r[i][C.z]];
+        const f = clamp((lapM - L(i - 1)) / Math.max(1e-6, L(i) - L(i - 1)), 0, 1);
+        return [r[i - 1][C.x] + (r[i][C.x] - r[i - 1][C.x]) * f, r[i - 1][C.z] + (r[i][C.z] - r[i - 1][C.z]) * f];
+      };
+      views.push({ A1, T1, bAt, tAt, bPos: eb ? place(bAt, A1) : [r[q.a][C.x], r[q.a][C.z]], tPos: et ? place(tAt, T1) : [r[q.t][C.x], r[q.t][C.z]],
+        vS, vmin, dec, decRec, edited: !!e });
+    }
+    let gain = 0;
+    for (let i = lineIndex(r) + 1; i < r.length; i++) {
+      const ds = L(i) - L(i - 1);
+      if (ds > 0 && ds < 50) gain += 2 * ds / Math.max(0.5, r[i][C.v] + r[i - 1][C.v]) - 2 * ds / Math.max(0.5, v[i] + v[i - 1]);
+    }
+    return (d.ed = { sig, v, band, views, gain });
+  }
+  function drawDrive() {
+    badgeHits = [];
+    if (!drive || !drive.rows.length || !layers.lap) return;
+    const r = shown(), full = drive.rows, zones = zonesOf(drive), ed = editedLap(drive);
+    if (!drive.rowIndex) drive.rowIndex = new Map(full.map((q, i) => [q, i]));
+    const ix = (q) => drive.rowIndex.get(q), vOf = (q) => ed.v[ix(q)];
+    let lo = Infinity, hi = -Infinity;
+    for (const q of r) { const s = vOf(q); lo = Math.min(lo, s); hi = Math.max(hi, s); }
+    const focus = bz && zones[bz.k] ? bz.k : -1;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    // braking stretches outlined in red under the path (an edited one from its new brake point to its slowest
+    // point, the recorded one dashed)
+    const along = (from, to, style, width) => {
+      ctx.strokeStyle = style; ctx.lineWidth = width; ctx.beginPath();
+      for (let k = from; k <= to; k++) { const [x, y] = worldToScreen(full[k][C.x], full[k][C.z]); if (k === from) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+      ctx.stroke();
+    };
+    zones.forEach((q, k) => {
+      const w = ed.views[k];
+      ctx.globalAlpha = focus < 0 || focus === k ? 1 : 0.3;
+      if (w.edited) { ctx.setLineDash([3, 7]); along(q.a, q.b, "rgba(255,77,106,.55)", 8); ctx.setLineDash([]); along(w.A1, q.m, "rgba(255,77,106,.95)", 11); }
+      else along(q.a, q.b, "rgba(255,77,106,.9)", 11);
+    });
+    ctx.globalAlpha = 1;
+    // the path, one stroke per run of frames in the same colour (every frame is in it): by the pedals (green
+    // accelerating, paler on part throttle, blue coasting, red braking) or by speed; with the edits
+    const byPedals = $("lapColour").value === "pedals";
+    const band = byPedals
+      ? (q) => { const o = ed.band[ix(q)]; return o >= 0 ? o : q[C.brk] >= 0.1 ? 3 : q[C.thr] >= 0.6 ? 2 : q[C.thr] > 0.05 ? 1 : 0; }
+      : (q) => Math.round(24 * (vOf(q) - lo) / Math.max(1, hi - lo));
+    const colour = (b) => (byPedals ? PEDAL_COLORS[b] : speedColor(lo + (hi - lo) * b / 24, lo, hi));
+    const stroke = (rows) => {
+      ctx.lineWidth = 4;
+      let i = 1;
+      while (i < rows.length) {
+        const b = band(rows[i]);
+        ctx.beginPath(); ctx.strokeStyle = colour(b);
+        let [x, y] = worldToScreen(rows[i - 1][C.x], rows[i - 1][C.z]); ctx.moveTo(x, y);
+        while (i < rows.length && band(rows[i]) === b) { [x, y] = worldToScreen(rows[i][C.x], rows[i][C.z]); ctx.lineTo(x, y); i++; }
+        ctx.stroke();
+      }
+    };
+    if (focus < 0) stroke(r);
+    else {
+      // editing a zone: the lap dimmed, the stretch around the zone bright
+      const q = zones[focus], w = ed.views[focus];
+      const a = Math.max(0, Math.min(q.a, w.A1) - 300), b = Math.min(full.length - 1, Math.max(q.t, w.T1) + 300);
+      ctx.globalAlpha = 0.3; stroke(r); ctx.globalAlpha = 1;
+      stroke(r.filter((s) => { const j = ix(s); return j >= a && j <= b; }));
+    }
+    // the braking points: a big "B" (edited: a yellow ring), the speed in and out of the zone; a "T" where an edit
+    // moved the throttle point (always for the zone being edited, with its slowest point)
+    const R = stage.getBoundingClientRect(), placed = [];
+    const mono = getComputedStyle(document.body).getPropertyValue("--mono");
+    const disc = (x, y, fill, ring, text) => {
+      ctx.fillStyle = fill; ctx.strokeStyle = ring; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(x, y, 11, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.font = "800 13px " + mono; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y + 0.5);
+      ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+    };
+    const label = (x, y, text, edge) => {
+      ctx.font = "700 13px " + mono;
+      const w = ctx.measureText(text).width + 14, h = 22;
+      let bx = x + 16, by = y - h / 2;  // moves with its point
+      for (let k = 0; k < 4 && placed.some((q) => bx < q[0] + q[2] && q[0] < bx + w && by < q[1] + q[3] + 2 && q[1] < by + h + 2); k++) by += h + 3;
+      if (placed.some((q) => bx < q[0] + q[2] && q[0] < bx + w && by < q[1] + q[3] && q[1] < by + h)) return;  // no room: the badge alone
+      placed.push([bx, by, w, h]);
+      ctx.fillStyle = "rgba(13,15,18,.92)"; ctx.fillRect(bx, by, w, h);
+      ctx.strokeStyle = edge; ctx.lineWidth = 1.5; ctx.strokeRect(bx + .75, by + .75, w - 1.5, h - 1.5);
+      ctx.fillStyle = "#fff"; ctx.fillText(text, bx + 7, by + 15.5);
+    };
+    const onScreen = (x, y) => x >= 0 && y >= 0 && x <= R.width && y <= R.height;
+    zones.forEach((q, k) => {
+      const w = ed.views[k];
+      if (focus >= 0 && focus !== k) ctx.globalAlpha = 0.35;
+      const [x, y] = worldToScreen(w.bPos[0], w.bPos[1]);
+      if (onScreen(x, y)) {
+        disc(x, y, "#ff4d6a", w.edited ? "#ffd60a" : "#fff", "B");
+        if (q.editable) badgeHits.push([x, y, k]);
+        label(x, y, Math.round(w.vS * 3.6) + " → " + Math.round(w.vmin * 3.6) + " km/h", w.edited ? "#ffd60a" : "#ff4d6a");
+      }
+      const tMoved = Math.abs(w.tAt - full[q.t][C.lap]) >= 0.005;
+      if (focus === k || tMoved) {
+        const [tx, ty] = worldToScreen(w.tPos[0], w.tPos[1]);
+        if (onScreen(tx, ty)) disc(tx, ty, "#21a856", tMoved ? "#ffd60a" : "#fff", "T");
+      }
+      if (focus === k) {
+        const m = full[q.m], [mx, my] = worldToScreen(m[C.x], m[C.z]);
+        if (onScreen(mx, my)) {
+          ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, 7); ctx.fill();
+          label(mx, my, "slowest " + Math.round(w.vmin * 3.6) + " km/h", "#a8aeb9");
+        }
+      }
+      ctx.globalAlpha = 1;
+    });
+    if (play.on || play.t > 0) {
+      const s = driveSample(play.t), [x, y] = worldToScreen(s.x, s.z);
+      ctx.save(); ctx.translate(x, y); ctx.rotate(s.ang + view.r);
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "#111"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-7, -7); ctx.lineTo(-4, 0); ctx.lineTo(-7, 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+      $("teTime").textContent = (play.t / 1000).toFixed(3);
+      $("teSpeed").textContent = Math.round(s.v * 3.6) + " km/h";
+      $("teGear").textContent = "G" + s.gear;
+      $("teThr").style.width = Math.round(s.thr * 100) + "%";
+      $("teBrk").style.width = Math.round(s.brk * 100) + "%";
+    }
+  }
+  // the zone menu (a right click on a "B") and the editing panel
+  function openZoneMenu(k, sx, sy) {
+    const m = $("zoneMenu"), q = zonesOf(drive)[k];
+    m.dataset.k = k;
+    $("zmReset").hidden = !zoneEdit(drive, q);
+    m.hidden = false;
+    const R = stage.getBoundingClientRect();
+    m.style.left = Math.max(4, Math.min(sx, R.width - m.offsetWidth - 8)) + "px";
+    m.style.top = Math.max(4, Math.min(sy, R.height - m.offsetHeight - 8)) + "px";
+    m.querySelector("button").focus();
+  }
+  $("zmEdit").onclick = () => { $("zoneMenu").hidden = true; bzEnter(+$("zoneMenu").dataset.k); };
+  $("zmReset").onclick = () => { $("zoneMenu").hidden = true; setZoneEdit(zonesOf(drive)[+$("zoneMenu").dataset.k], null); };
+  // a click anywhere else closes the menu (one on the map then does nothing more)
+  document.addEventListener("pointerdown", (e) => {
+    const m = $("zoneMenu");
+    if (m.hidden || m.contains(e.target)) return;
+    m.hidden = true;
+    if (e.target === canvas && e.button !== 2) e.stopPropagation();
+  }, true);
+  const editableZones = () => (drive ? zonesOf(drive).map((q, k) => [q, k]).filter(([q]) => q.editable) : []);
+  function bzEnter(k) {
+    const zs = drive && zonesOf(drive);
+    if (!zs || !zs[k] || !zs[k].editable) return;
+    if (!layers.lap) { layers.lap = true; $("lyLap").checked = true; }
+    bz = { k, pick: bz ? bz.pick : "brake" };
+    setHover(-1);
+    $("bzPanel").hidden = false; $("bzStatus").textContent = "";
+    // the zone filling the map above the panel: its brake and throttle points and a little either side
+    const q = zs[k], w = editedLap(drive).views[k], full = drive.rows, R = stage.getBoundingClientRect();
+    const lo = Math.max(0, Math.min(q.a, w.A1) - 90), hi = Math.min(full.length - 1, Math.max(q.t, w.T1) + 90);
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = lo; i <= hi; i++) { x0 = Math.min(x0, full[i][C.x]); x1 = Math.max(x1, full[i][C.x]); z0 = Math.min(z0, full[i][C.z]); z1 = Math.max(z1, full[i][C.z]); }
+    const room = R.height - $("bzPanel").offsetHeight - 120;
+    zoomGoal = null;
+    view.s = Math.max(0.3, Math.min(6, Math.min(R.width, room) / (Math.max(x1 - x0, z1 - z0, 40) * 1.35)));
+    const [dx, dz] = screenToMap(0, ($("bzPanel").offsetHeight + 40) / 2);  // (the middle of the room above the panel)
+    view.cx = (x0 + x1) / 2 + dx; view.cz = (z0 + z1) / 2 + dz;
+    viewChanged(); baseDirty = true;
+    bzShow(); dirty = true;
+  }
+  function bzExit() { bz = null; $("bzPanel").hidden = true; dirty = true; }
+  // the glow round the "B" under the pointer (one that can be edited), where the last drawing put it
+  let hoverZone = -1;
+  function setHover(k) {
+    if (k === hoverZone) return;
+    hoverZone = k;
+    stage.classList.toggle("onbadge", k >= 0);
+    canvas.title = k >= 0 ? "Right-click to edit this braking zone" : "";
+    syncGlows();
+  }
+  canvas.addEventListener("pointerleave", () => setHover(-1));
+  function syncGlows() {
+    const box = $("glows"), hits = bz ? [] : badgeHits.filter((h) => h[2] === hoverZone);
+    while (box.children.length < hits.length) box.appendChild(document.createElement("i"));
+    [...box.children].forEach((g, i) => {
+      g.hidden = i >= hits.length;
+      if (!g.hidden) g.style.transform = "translate(" + hits[i][0].toFixed(1) + "px, " + hits[i][1].toFixed(1) + "px)";
+    });
+  }
+  const kmh = (v) => Math.round(v * 3.6) + " km/h";
+  function bzShow() {
+    if (!bz || !drive) return;
+    const q = zonesOf(drive)[bz.k], w = editedLap(drive).views[bz.k], ed = editedLap(drive), L = (i) => drive.rows[i][C.lap];
+    const list = editableZones(), pos = list.findIndex(([, k]) => k === bz.k);
+    $("bzTitle").textContent = "Braking zone " + (pos + 1) + " of " + list.length;
+    $("bzPrev").disabled = pos <= 0; $("bzNext").disabled = pos >= list.length - 1;
+    const e = zoneEdit(drive, q);
+    const bAt = e && e.brakeAt != null ? e.brakeAt : L(q.a), tAt = e && e.throttleAt != null ? e.throttleAt : L(q.t);
+    const dist = (m) => (m < 0.995 ? Math.round(m * 100) + " cm" : m.toFixed(2) + " m");
+    const diff = (dm) => (Math.abs(dm) < 0.005 ? "as recorded" : dist(Math.abs(dm)) + " " + (dm > 0 ? "later" : "earlier"));
+    $("bzBrake").textContent = "Brake at " + bAt.toFixed(2) + " m · " + diff(bAt - L(q.a));
+    $("bzThr").textContent = "Throttle at " + tAt.toFixed(2) + " m · " + diff(tAt - L(q.t));
+    showStep();
+    $("bzPickB").setAttribute("aria-pressed", bz.pick === "brake"); $("bzPickT").setAttribute("aria-pressed", bz.pick === "throttle");
+    const info = $("bzInfo"); info.textContent = kmh(w.vS) + " → " + kmh(w.vmin) + " · braking " + w.dec.toFixed(1) + " m/s² (recorded " + w.decRec.toFixed(1) + ")";
+    if (w.dec > Math.max(w.decRec * 1.15, 12.5)) {
+      const warn = document.createElement("span"); warn.className = "warn";
+      warn.textContent = " · harder than this lap braked here: the car may run wide or miss the corner";
+      info.appendChild(warn);
+    }
+    const g = ed.gain;
+    info.appendChild(document.createElement("br"));
+    const any = drive.edits && drive.edits.zones && Object.keys(drive.edits.zones).length;
+    info.appendChild(document.createTextNode(!any ? "No edits on this lap yet." : "The lap with its edits: " +
+      (Math.abs(g) < 0.005 ? "within 0.01 s of the recorded one" : "about " + Math.abs(g).toFixed(2) + " s " + (g > 0 ? "faster" : "slower") + " than recorded") + " (for the AI cars that drive it)."));
+    $("bzReset").disabled = !e;
+  }
+  let editTimer = 0;
+  function saveEdits(d) {  // into the lap's document (its recorded frames stay as they are)
+    clearTimeout(editTimer);
+    editTimer = setTimeout(async () => {
+      if (!db) { $("bzStatus").textContent = "Not saved: this needs the page open on claude.ai, signed in."; return; }
+      try {
+        const s = await db.doc("drives/" + d.id).get();
+        if (!s.exists) throw new Error("the lap isn't in the store");
+        await db.doc("drives/" + d.id).set({ ...s.data(), edits: d.edits, editedAt: new Date().toISOString() });
+        $("bzStatus").textContent = "Saved " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ".";
+      } catch (x) { $("bzStatus").textContent = "Couldn't save (" + ((x && (x.code || x.message)) || "error") + ")."; }
+    }, 700);
+  }
+  function setZoneEdit(q, e) {
+    const d = drive, z = ((d.edits = d.edits || {}).zones = d.edits.zones || {});
+    for (const k in z) if (Math.abs(+k - +q.key) < 1) delete z[k];
+    const L = (i) => d.rows[i][C.lap], out = {};
+    if (e && e.brakeAt != null && Math.abs(e.brakeAt - L(q.a)) >= 0.005) out.brakeAt = +e.brakeAt.toFixed(2);
+    if (e && e.throttleAt != null && Math.abs(e.throttleAt - L(q.t)) >= 0.005) out.throttleAt = +e.throttleAt.toFixed(2);
+    if (Object.keys(out).length) z[q.key] = out;
+    $("bzStatus").textContent = "";
+    saveEdits(d); bzShow(); dirty = true;
+  }
+  function bzNudge(which, dm) {
+    const q = zonesOf(drive)[bz.k], e = zoneEdit(drive, q) || {}, L = (i) => drive.rows[i][C.lap];
+    const brake = which === "brake", cur = brake ? (e.brakeAt != null ? e.brakeAt : L(q.a)) : (e.throttleAt != null ? e.throttleAt : L(q.t));
+    const lo = brake ? L(q.from + 1) : L(q.m), hi = brake ? L(Math.max(q.from + 1, q.m - 2)) : L(Math.max(q.m, q.to - 1));
+    const to = Math.round(Math.min(hi, Math.max(lo, cur + dm)) * 100) / 100;  // (to the centimetre: no float creep)
+    setZoneEdit(q, brake ? { ...e, brakeAt: to } : { ...e, throttleAt: to });
+    if (Math.abs(to - (cur + dm)) > 0.006)
+      $("bzStatus").textContent = brake ? (dm < 0 ? "As early as it goes: the last corner's throttle point." : "As late as it goes: just before this corner's slowest point.")
+        : (dm < 0 ? "As early as it goes: this corner's slowest point." : "As late as it goes: the next brake point.");
+  }
+  function bzPlace(sx, sy) {  // a click on the lap: the brake or throttle point there (between frames, to the centimetre)
+    const q = zonesOf(drive)[bz.k], full = drive.rows, L = (i) => full[i][C.lap];
+    let best = -1, bd = 30, at = 0;
+    for (let i = Math.max(0, q.from - 600); i < Math.min(full.length - 1, q.to + 600); i++) {
+      // the click's nearest point on the stretch between this frame and the next
+      const [ax, ay] = worldToScreen(full[i][C.x], full[i][C.z]), [bx, by] = worldToScreen(full[i + 1][C.x], full[i + 1][C.z]);
+      const len2 = (bx - ax) ** 2 + (by - ay) ** 2, f = len2 > 0 ? Math.min(1, Math.max(0, ((sx - ax) * (bx - ax) + (sy - ay) * (by - ay)) / len2)) : 0;
+      const dd = Math.hypot(ax + (bx - ax) * f - sx, ay + (by - ay) * f - sy);
+      if (dd < bd && L(i + 1) >= L(i)) { bd = dd; best = i; at = L(i) + (L(i + 1) - L(i)) * f; }
+    }
+    if (best < 0) { $("bzStatus").textContent = "Click on the lap's line, near this zone."; return; }
+    const brake = bz.pick === "brake", lo = brake ? L(q.from + 1) : L(q.m), hi = brake ? L(Math.max(q.from + 1, q.m - 2)) : L(Math.max(q.m, q.to - 1));
+    if (at < lo - 0.005 || at > hi + 0.005) {
+      $("bzStatus").textContent = brake ? "The brake point goes between the last corner's throttle point and this corner's slowest point."
+        : "The throttle point goes between this corner's slowest point and the next brake point.";
+      return;
+    }
+    const e = zoneEdit(drive, q) || {}, m = Math.round(Math.min(hi, Math.max(lo, at)) * 100) / 100;
+    setZoneEdit(q, brake ? { ...e, brakeAt: m } : { ...e, throttleAt: m });
+  }
+  // how far "earlier" / "later" moves a point: 1 cm, 10 cm or 1 m (kept in this browser)
+  const STEPS = [["bzStepCm", 0.01, "1 cm"], ["bzStepDm", 0.1, "10 cm"], ["bzStepM", 1, "1 m"]];
+  let bzStep = 1;
+  try { const s = +localStorage.getItem("bzStep"); if (STEPS.some((x) => x[1] === s)) bzStep = s; } catch (e) {}
+  function showStep() {
+    const name = STEPS.find((x) => x[1] === bzStep)[2];
+    for (const [id, s] of STEPS) $(id).setAttribute("aria-pressed", s === bzStep);
+    $("bzBe").textContent = $("bzTe").textContent = name + " earlier";
+    $("bzBl").textContent = $("bzTl").textContent = name + " later";
+  }
+  for (const [id, s] of STEPS) $(id).onclick = () => { bzStep = s; try { localStorage.setItem("bzStep", String(s)); } catch (e) {} showStep(); };
+  $("bzPrev").onclick = () => { const l = editableZones(), p = l.findIndex(([, k]) => k === bz.k); if (p > 0) bzEnter(l[p - 1][1]); };
+  $("bzNext").onclick = () => { const l = editableZones(), p = l.findIndex(([, k]) => k === bz.k); if (p >= 0 && p < l.length - 1) bzEnter(l[p + 1][1]); };
+  $("bzDone").onclick = bzExit;
+  $("bzPickB").onclick = () => { bz.pick = "brake"; bzShow(); };
+  $("bzPickT").onclick = () => { bz.pick = "throttle"; bzShow(); };
+  $("bzBe").onclick = () => bzNudge("brake", -bzStep);
+  $("bzBl").onclick = () => bzNudge("brake", bzStep);
+  $("bzTe").onclick = () => bzNudge("throttle", -bzStep);
+  $("bzTl").onclick = () => bzNudge("throttle", bzStep);
+  $("bzReset").onclick = () => setZoneEdit(zonesOf(drive)[bz.k], null);
+  // (local test pages only: where things are on the map)
+  if (location.hostname === "127.0.0.1") window.__lab = { badgeHits: () => badgeHits, rowAt: (i) => drive && worldToScreen(drive.rows[i][C.x], drive.rows[i][C.z]), zones: () => drive && zonesOf(drive), bz: () => bz };
+  $("lapZones").onclick = () => {
+    const l = editableZones();
+    if (l.length) bzEnter(l[0][1]); else $("lapStatus").textContent = "This lap has no braking zones to edit.";
+  };
+  function fmtLap(ms) { if (!ms) return "unfinished"; const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000; return m + "'" + s.toFixed(3).padStart(6, "0"); }
+  // a first lap holds its start: off the grid from the green light, or from a rolling start's handover
+  const lapName = (d) => (d.start === "grid" ? "lap 1 (grid start)" : d.start === "rolling" ? "lap 1 (rolling start)" : d.lap ? "lap " + d.lap : "lap");
+  const PEDAL_COLORS = ["#4f8bff", "#a6e36b", "#2fd56f", "#ff4d6a"]; // coasting, part throttle, accelerating, braking
+  function showLapLegend() {
+    const box = $("lapLegend"); box.textContent = "";
+    const item = (colour, text) => { const d = document.createElement("span"); d.className = "dot"; d.style.background = colour; box.append(d, document.createTextNode(text)); };
+    if ($("lapColour").value === "pedals") {
+      item(PEDAL_COLORS[2], "accelerating"); item(PEDAL_COLORS[1], "part throttle"); item(PEDAL_COLORS[0], "coasting"); item(PEDAL_COLORS[3], "braking");
+    } else { item("#4f8bff", "slow"); item("#ffd23d", ""); item("#ff4d4d", "fast"); }
+    const b = document.createElement("span"); b.className = "bmark"; b.textContent = "B";
+    box.append(b, document.createTextNode("braking point (km/h in → out)"));
+  }
+  try { const c = localStorage.getItem("lapColour"); if (c) $("lapColour").value = c; } catch (e) {}
+  showLapLegend();
+  $("lapColour").onchange = (e) => { showLapLegend(); dirty = true; try { localStorage.setItem("lapColour", e.target.value); } catch (x) {} };
+
+  // every lap on this track, best first: recorded laps (you, the autopilot) and every car of every test race
+  function renderTimes() {
+    const box = $("times"); box.textContent = "";
+    const rows = [];
+    for (const d of drives)
+      if (d.lapTimeMs)
+        rows.push({ ms: d.lapTimeMs, who: d.driver === "player" ? "You" : d.driver === "autopilot" ? "Autopilot" : d.driver,
+          detail: (d.car ? d.car + " · " : "") + "recorded " + lapName(d),
+          open: () => { $("lapPick").value = d.id; pickDrive(d.id); } });
+    for (const rc of races)
+      for (const k in rc.cars || {}) {
+        const c = rc.cars[k], laps = (c.laps || []).filter((x) => x > 0);
+        if (!laps.length) continue;
+        const gt3 = c.setup === "GT3's own AI";
+        rows.push({ ms: Math.min(...laps), who: k === "0" ? "You (autopilot)" : gt3 ? (GT4_HOST ? "GT4's own AI" : "GT3's own AI") + " · car " + k : "AI car " + k,
+          detail: (k !== "0" && !gt3 ? shortSetup(c.setup) + " · " : "") + (rc.title || rc.id) + " · laps " + laps.map(fmtLap).join(", "),
+          open: () => { showTab("races"); $("racePick").value = rc.id; pickRace(rc.id); } });
+      }
+    $("lapsCount").textContent = drives.length || "";
+    $("racesCount").textContent = races.length || "";
+    rows.sort((a, b) => a.ms - b.ms);
+    if (!rows.length) { const p = document.createElement("p"); p.className = "dim"; p.textContent = "No laps on this track yet."; box.appendChild(p); return; }
+    const many = rows.length > 10 && !timesAll;
+    (many ? rows.slice(0, 10) : rows).forEach((r, i) => {
+      const b = document.createElement("button"); if (i === 0) b.className = "best";
+      const pos = document.createElement("span"); pos.className = "pos"; pos.textContent = i + 1;
+      const who = document.createElement("span"); who.textContent = r.who;
+      const t = document.createElement("span"); t.className = "t"; t.textContent = fmtLap(r.ms);
+      const sm = document.createElement("small"); sm.textContent = r.detail;
+      b.append(pos, who, t, sm); b.title = "Open this lap"; b.onclick = r.open;
+      box.appendChild(b);
+    });
+    if (rows.length > 10) {
+      const more = document.createElement("button"); more.className = "more";
+      more.textContent = timesAll ? "Show the best 10" : "Show all " + rows.length + " laps";
+      more.onclick = () => { timesAll = !timesAll; renderTimes(); };
+      box.appendChild(more);
+    }
+  }
+  let timesAll = false;
+  // ---------------------------------------------------------------- adding recorded laps
+  // A lap file from the game (gt3_drive_log: "# key value" lines, then t_ms, lap_m, x, y, z, speed_ms,
+  // gear, rpm, throttle, brake, steer, surfaces, yaw, vsync) -> drives/<id> + drives/<id>/rows/cNNN
+  let RUNWAYS = {};  // GT3's own courses: runway CRC32 -> track id
+  function parseLap(name, text) {
+    const head = {}, rows = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.startsWith("#")) { const k = line.slice(1).trim(), sp = k.indexOf(" "); head[sp < 0 ? k : k.slice(0, sp)] = sp < 0 ? "" : k.slice(sp + 1); continue; }
+      if (!/^\d/.test(line)) continue;
+      const w = line.split(",");
+      if (w.length < 12) continue;  // a line still being written
+      const t = +w[0];
+      if (rows.length && t === rows[rows.length - 1][0]) continue;  // the same game frame twice
+      const r = [t, +(+w[1]).toFixed(2), +(+w[2]).toFixed(3), +(+w[4]).toFixed(3), +(+w[5]).toFixed(3), +w[6] | 0, +(+w[8]).toFixed(3), +(+w[9]).toFixed(3), +(+w[10]).toFixed(3), w[11]];
+      if (w.length >= 14) r.push(+(+w[3]).toFixed(3), +(+w[12]).toFixed(4), +w[7] | 0);
+      rows.push(r);
+    }
+    if (!rows.length) throw new Error("no laps in it");
+    const course = head.course || "", stem = name.replace(/\.csv$/i, "");
+    let track = null;
+    if (course.startsWith("replace-")) { const n = course.slice(8); if (index.some((t) => t.id === n)) track = n; }
+    else if (course.startsWith("runway-")) track = RUNWAYS[course.slice(7)] || null;
+    const id = stem.replace(/^replace-/, "").replace(/[^A-Za-z0-9_\-.]/g, "_").slice(0, 120);
+    const parts = id.split("-");
+    // Only whole racing laps count. The recorder (v42 on) records only while the player has the car: the first
+    // lap's file starts at the green light off the grid ("# start grid") or where a rolling start was handed over
+    // ("# start rolling"), runs over the line and round the lap. An older recording has that start as a "lap 0"
+    // file of its own (joined onto its lap 1 when both are added). A lap the recording stopped in (F10, the race
+    // ending or restarting, the game closed) has no lap time; one the recording began in (F10 part way round)
+    // starts well past the line: every whole lap is within a metre or two of the line when its own lap begins.
+    const lapNo = +(head.lap || 0), start = head.start === "grid" || head.start === "rolling" ? head.start : null;
+    const skip = lapNo === 0 ? "start0" : !("lap_time_ms" in head) ? "unfinished" : rows[lineIndex(rows)][1] > 30 ? "joined" : null;
+    return { id, track, rows, skip, t0: rows[0][0], meta: { driver: head.driver || "player", car: head.car || "", lap: lapNo, ...(start ? { start } : {}),
+      lapTimeMs: head.lap_time_ms ? +head.lap_time_ms : null, complete: "lap_time_ms" in head, recorded: parts.length >= 3 ? parts[parts.length - 2] : "",
+      cols: ["t_ms", "lap_m", "x", "z", "speed_ms", "gear", "throttle", "brake", "steer", "surfaces", "y", "yaw", "rpm"], rowCount: rows.length } };
+  }
+  // where a lap's own line begins: a first lap begun at the start has its rows from before the line first (their
+  // distance near a whole lap), then the distance drops back to about 0 at the line; other laps begin there
+  function lineIndex(rows) {
+    for (let i = 1; i < rows.length; i++) if (rows[i][1] < rows[i - 1][1] - 100) return i;
+    return 0;
+  }
+  $("lapAdd").onclick = () => {
+    if (!db) { $("lapStatus").textContent = "Adding laps needs this page opened on claude.ai while signed in."; return; }
+    $("lapFile").click();
+  };
+  $("lapFile").onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    if (!files.length || !db) return;
+    await addLaps(files.map((f) => ({ name: f.name, text: () => f.text() })));
+  };
+  // lap files ({name, text()}) -> the store: whole laps only (see parseLap), an older recording's start joined onto its lap 1
+  async function addLaps(files, already) {
+    const out = [], skipped = [], left = { start: 0, unfinished: 0, joined: 0 }, laps = [];
+    $("lapAdd").disabled = $("lapGame").disabled = true;
+    for (const file of files)
+      try { laps.push(parseLap(file.name, await file.text())); } catch (x) { skipped.push(file.name + " (" + ((x && (x.message || x.code)) || "error") + ")"); }
+    // an older recording's start ("lap 0": green light to the line) joined onto its race's lap 1, as the recorder does now
+    for (const s of laps.filter((l) => l.skip === "start0")) {
+      const one = laps.find((l) => !l.skip && l.meta.lap === 1 && !l.meta.start && l.id === s.id.replace(/-lap00$/, "-lap01"));
+      if (!one) { left.start++; continue; }
+      const grid = s.rows[0][4] < 1;  // standing at the green light
+      one.meta.lapTimeMs = one.t0 + one.meta.lapTimeMs - (grid ? 0 : s.t0);  // lap 1 ends at its first row's clock + its time
+      one.rows = s.rows.concat(one.rows); one.t0 = s.t0; one.meta.start = grid ? "grid" : "rolling"; one.meta.rowCount = one.rows.length;
+    }
+    for (let f = 0; f < laps.length; f++) {
+      const lap = laps[f];
+      try {
+        if (lap.skip) { if (lap.skip !== "start0") left[lap.skip]++; continue; }
+        $("lapStatus").textContent = "Adding " + (f + 1) + " of " + laps.length + ": " + lap.id + "…";
+        // times from the green light for a grid start (as GT3 counts lap 1), else from the lap's first row
+        const base = lap.meta.start === "grid" ? 0 : lap.t0;
+        for (const r of lap.rows) r[0] -= base;
+        const track = lap.track || (T && T.id);
+        const chunks = [];
+        for (let i = 0; i < lap.rows.length; i += 1500) chunks.push(lap.rows.slice(i, i + 1500));
+        for (let i = 0; i < chunks.length; i++)
+          await db.doc("drives/" + lap.id + "/rows/c" + String(i).padStart(3, "0")).set({ i, rows: chunks[i] });
+        await db.doc("drives/" + lap.id).set({ track, ...lap.meta, chunks: chunks.length, addedAt: new Date().toISOString() });
+        const tname = (index.find((t) => t.id === track) || {}).name || track;
+        out.push(fmtLap(lap.meta.lapTimeMs) + " " + lapName(lap.meta) + " on " + tname + (lap.track ? "" : " (track not recognised: put on the one shown)"));
+      } catch (x) { skipped.push(lap.id + " (" + ((x && (x.message || x.code)) || "error") + ")"); }
+    }
+    $("lapAdd").disabled = $("lapGame").disabled = false;
+    const n = (k, one, many) => (left[k] ? left[k] + " " + (left[k] === 1 ? one : many) : "");
+    const notLaps = [n("start", "start without its lap 1", "starts without their lap 1"), n("unfinished", "unfinished lap", "unfinished laps"),
+      n("joined", "lap the recording joined part way round", "laps the recording joined part way round")].filter(Boolean);
+    $("lapStatus").textContent = (out.length ? "Added " + out.join("; ") + "." : "No new whole laps" + (files.length ? " in " + (files.length === 1 ? "that file." : "those files.") : ".")) +
+      (already ? " " + already + " already added." : "") +
+      (notLaps.length ? " Left out (not whole laps): " + notLaps.join(", ") + "." : "") + (skipped.length ? " Couldn't read: " + skipped.join(", ") + "." : "");
+    if (T) loadDrives(T.id);
+  }
+  // served by the GT3 launcher: the game's recordings folder read straight away (laps already in the store left alone)
+  async function addFromGame() {
+    if (!db || !(window.claude && window.claude.local)) return;
+    $("lapStatus").textContent = "Looking in the game's recordings folder…";
+    try {
+      const get = (u) => fetch(u, { cache: "no-store", headers: { "X-RaceLab": "1" } }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r; });
+      const names = (await (await get("/api/recordings")).json()).map((x) => x.name);
+      const have = new Set((await db.collection("drives").get()).docs.map((d) => d.id));
+      const idOf = (name) => name.replace(/\.csv$/i, "").replace(/^replace-/, "").replace(/[^A-Za-z0-9_\-.]/g, "_").slice(0, 120);
+      // new: not added before (an old "lap 0" start counts as added with its lap 1)
+      const fresh = names.filter((n) => { const id = idOf(n); return !have.has(id) && !have.has(id.replace(/-lap00$/, "-lap01")); });
+      if (!names.length) { $("lapStatus").textContent = "No recordings in the game's folder yet: press F10 in a race to record laps."; return; }
+      await addLaps(fresh.map((n) => ({ name: n, text: () => get("/api/recording?name=" + encodeURIComponent(n)).then((r) => r.text()) })), names.length - fresh.length);
+    } catch (x) { $("lapStatus").textContent = "Couldn't read the recordings folder (" + ((x && x.message) || "error") + ")."; $("lapAdd").disabled = $("lapGame").disabled = false; }
+  }
+  $("lapGame").onclick = addFromGame;
+  if (window.claude && window.claude.local) {
+    $("lapGame").hidden = false;
+    $("lapStatus").textContent = "Press F10 in the game to record your laps; Add laps from the game picks up the new ones (the game's recordings folder). Only whole laps are kept.";
+  }
+
+  async function loadDrives(id) {
+    drives = []; drive = null; play.on = false; play.t = 0;
+    const pick = $("lapPick"); pick.textContent = "";
+    if (db) {
+      try {
+        const q = await db.collection("drives").where("track", "==", id).limit(40).get();
+        // whole laps only (a start or an unfinished lap added before v41 stays out of the lists)
+        drives = q.docs.map((d) => ({ id: d.id, ...d.data() })).filter((d) => (d.lap ?? 1) >= 1 && d.lapTimeMs > 0).sort((a, b) => a.lapTimeMs - b.lapTimeMs);
+      } catch (e) {}
+    }
+    if (!drives.length) {
+      const o = document.createElement("option"); o.value = ""; o.textContent = "No recorded laps on this track yet"; pick.appendChild(o);
+    } else {
+      for (const d of drives) {
+        const o = document.createElement("option"); o.value = d.id;
+        o.textContent = fmtLap(d.lapTimeMs) + " · " + (d.driver === "player" ? "you" : d.driver) + (d.car ? " · " + d.car : "") + " · " + lapName(d);
+        pick.appendChild(o);
+      }
+      pick.value = drives[0].id; await pickDrive(drives[0].id);
+    }
+    for (const b of ["lapPlay", "lapRate", "lapUse", "lapZones"]) $(b).disabled = !drives.length;
+    $("tele").hidden = !drives.length;
+    loadAi(id);
+    renderTimes();
+    loadRaces(id);
+    dirty = true;
+  }
+  async function pickDrive(id) {
+    const d = drives.find((q) => q.id === id) || null;
+    drive = null; play.on = false; play.t = 0; $("lapPlay").textContent = "Play"; dirty = true;
+    if (bz) bzExit();  // (another lap: its zones are its own)
+    $("zoneMenu").hidden = true;
+    if (!d) return;
+    if (!d.rows && db) {
+      // every recorded frame, in chunks of 1500 rows
+      try {
+        const q = await db.collection("drives/" + id + "/rows").get();
+        d.rows = q.docs.map((c) => c.data()).sort((a, b) => a.i - b.i).flatMap((c) => c.rows);
+      } catch (e) { d.rows = []; }
+    }
+    if ($("lapPick").value !== id) return;  // another lap was picked meanwhile
+    drive = d && d.rows && d.rows.length ? d : null;
+    dirty = true;
+  }
+  $("lapPick").onchange = (e) => pickDrive(e.target.value);
+  $("lapPlay").onclick = () => {
+    if (!drive) return;
+    play.on = !play.on; play.last = performance.now();
+    if (play.on && play.t >= drive.rows[drive.rows.length - 1][C.t]) play.t = 0;
+    $("lapPlay").textContent = play.on ? "Pause" : "Play";
+  };
+  $("lapRate").onclick = () => { play.rate = play.rate === 1 ? 4 : play.rate === 4 ? 0.25 : 1; $("lapRate").textContent = play.rate === 0.25 ? "¼×" : play.rate + "×"; };
+  $("lapUse").onclick = () => {
+    if (!drive) return;
+    const all = shown(), path = all.slice(lineIndex(all)).map((q) => [q[C.x], q[C.z]]);  // from the line (a first lap's start left off)
+    const pts = simplify(path, 0.5);
+    if (pts.length > 3 && Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 8) pts.pop();
+    setPoints(pts.map((p) => p.slice()));
+    status("Your line is now this recorded lap (" + pts.length + " points). Edit it, then save.");
+  };
+
+  // ---------------------------------------------------------------- test races
+  // races/<id>: {track, title, cars {k: {who, setup, laps [ms], events [[t, lap_m, x, z, kind, text]]}}, endMs}
+  // races/<id>/rows/cNNN: {i, rows: [[t_ms, car, lap_m, x, z, speed, throttle, brake]]} (cars ~10 a second)
+  const CAR_COLORS = ["#ffffff", "#ff5d5d", "#4fd18b", "#33d1ff", "#ffd23d", "#c08bff", "#ff9f40", "#7de0d0"];
+  let races = [], race = null, rplay = { on: false, t: 0, rate: 4, last: 0 };
+  const raceHidden = new Set();  // cars switched off in the playback (kept while the page is open)
+  const fmtClock = (ms) => { const s = Math.max(0, ms) / 1000; return Math.floor(s / 60) + ":" + (s % 60).toFixed(1).padStart(4, "0"); };
+  function shortSetup(s) {
+    if (!s) return "";
+    return s.replace(/\.txt/g, "").replace(/ \([^)]*steps\)/, "").replace(/, pace 1\.00/, "").replace(/±0%/, "none").replace(/±0 m/, "none");
+  }
+  async function loadRaces(id) {
+    races = []; race = null; rplay.on = false; rplay.t = 0;
+    const pick = $("racePick"); pick.textContent = "";
+    if (db) {
+      try {
+        const q = await db.collection("races").where("track", "==", id).limit(30).get();
+        races = q.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.when < b.when ? 1 : -1));
+      } catch (e) { note("races failed: " + (e && (e.code || e.message))); }
+    }
+    if (!T || T.id !== id) return;
+    if (!races.length) {
+      const o = document.createElement("option"); o.value = ""; o.textContent = "No test races on this track yet"; pick.appendChild(o);
+    } else {
+      for (const r of races) { const o = document.createElement("option"); o.value = r.id; o.textContent = r.title || r.id; pick.appendChild(o); }
+      pick.value = races[0].id; pickRace(races[0].id);
+    }
+    showRace(); renderTimes();
+  }
+  async function pickRace(rid) {
+    const r = races.find((q) => q.id === rid) || null;
+    race = null; rplay.on = false; rplay.t = 0; showRace();
+    if (!r || !db) return;
+    $("raceInfo").textContent = "loading…";
+    if (!r.byCar) {
+      try {
+        const q = await db.collection("races/" + rid + "/rows").get();
+        const rows = q.docs.map((c) => c.data()).sort((a, b) => a.i - b.i).flatMap((c) => c.rows);
+        r.byCar = {};
+        for (const row of rows) (r.byCar[row[1]] || (r.byCar[row[1]] = [])).push(row);
+        r.start = rows.length ? rows[0][0] : 0;
+        r.end = rows.length ? rows[rows.length - 1][0] : 0;
+      } catch (e) { r.byCar = null; $("raceInfo").textContent = "couldn't load (" + (e && (e.code || e.message)) + ")"; return; }
+    }
+    if ($("racePick").value !== rid) return;
+    race = r; rplay.t = r.start; showRace(); dirty = true;
+  }
+  function showRace() {
+    const has = !!race;
+    for (const b of ["racePlay", "raceRate", "raceTime"]) $(b).disabled = !has;
+    $("racePlay").textContent = rplay.on ? "Pause" : "Play";
+    $("raceRate").textContent = rplay.rate === 0.25 ? "¼×" : rplay.rate + "×";
+    const box = $("raceCars"), ev = $("raceEvents"); box.textContent = ""; ev.textContent = "";
+    $("raceCarsBox").hidden = !has;
+    $("raceEventsBox").hidden = !has || !Object.values(race.cars || {}).some((c) => (c.events || []).length);
+    if (!has) { $("raceInfo").textContent = races.length ? "" : ""; $("raceClock").textContent = "0:00.0"; return; }
+    $("raceInfo").textContent = Object.keys(race.byCar || {}).length + " cars";
+    const keys = Object.keys(race.cars || {}).sort((a, b) => a - b);
+    for (const k of keys) {
+      const c = race.cars[k];
+      const row = document.createElement("div"); row.className = "racecar" + (raceHidden.has(k) ? " off" : "");
+      const show = document.createElement("input"); show.type = "checkbox"; show.checked = !raceHidden.has(k);
+      show.setAttribute("aria-label", "Show " + (c.who || "car " + k));
+      show.onchange = () => { if (show.checked) raceHidden.delete(k); else raceHidden.add(k); row.classList.toggle("off", !show.checked); dirty = true; };
+      const dot = document.createElement("i"); dot.style.background = CAR_COLORS[k % CAR_COLORS.length];
+      const name = document.createElement("b"); name.textContent = c.who || "Car " + k;
+      const laps = document.createElement("span"); laps.textContent = (c.laps || []).map(fmtLap).join(" · ") || "no full lap";
+      name.appendChild(laps);
+      const set = document.createElement("small"); set.textContent = shortSetup(c.setup) + ((c.events || []).length ? " · " + c.events.length + " events" : "");
+      row.append(show, dot, name, set); box.appendChild(row);
+    }
+    const all = [];
+    for (const k of keys) for (const e of race.cars[k].events || []) all.push([k, ...e]);
+    all.sort((a, b) => a[1] - b[1]);
+    for (const e of all) {
+      const b = document.createElement("button");
+      const t = document.createElement("b"); t.textContent = fmtClock(e[1] - race.start);
+      b.append(t, document.createTextNode("Car " + e[0] + " " + e[6]));
+      b.onclick = () => { rplay.on = false; rplay.t = Math.max(race.start, e[1] - 3000); syncRaceUi(); dirty = true; };
+      ev.appendChild(b);
+    }
+    syncRaceUi();
+  }
+  function syncRaceUi() {
+    if (!race) return;
+    const span = Math.max(1, race.end - race.start);
+    $("raceTime").value = Math.round((rplay.t - race.start) / span * 1000);
+    $("raceClock").textContent = fmtClock(rplay.t - race.start) + " / " + fmtClock(span);
+    $("racePlay").textContent = rplay.on ? "Pause" : "Play";
+  }
+  function carAt(list, t) {  // place at race time t (between the two samples around it)
+    let lo = 0, hi = list.length - 1;
+    if (!list.length || t < list[0][0] - 500 || t > list[hi][0] + 500) return null;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (list[m][0] <= t) lo = m; else hi = m; }
+    const a = list[lo], b = list[hi], f = b[0] > a[0] ? Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0]))) : 0;
+    return [a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f, a[5] + (b[5] - a[5]) * f, lo];
+  }
+  function drawRace() {
+    if (!race || !race.byCar || !layers.race) return;
+    const t = rplay.t;
+    // events where they happened: red cross stuck, orange ring off the line, yellow dot a planned mistake
+    for (const k in race.cars) if (!raceHidden.has(k)) for (const e of race.cars[k].events || []) {
+      const [x, y] = worldToScreen(e[2], e[3]), past = e[0] <= t;
+      ctx.globalAlpha = past ? 1 : 0.35; ctx.lineWidth = 2.2;
+      if (e[4] === "stuck") { ctx.strokeStyle = "#ff4d6a"; ctx.beginPath(); ctx.moveTo(x - 6, y - 6); ctx.lineTo(x + 6, y + 6); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x - 6, y + 6); ctx.stroke(); }
+      else if (e[4] === "off") { ctx.strokeStyle = "#ff9f40"; ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.stroke(); }
+      else { ctx.fillStyle = "#ffd23d"; ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill(); }
+    }
+    ctx.globalAlpha = 1;
+    for (const k in race.byCar) {
+      if (raceHidden.has(k)) continue;
+      const list = race.byCar[k], at = carAt(list, t);
+      if (!at) continue;
+      const col = CAR_COLORS[k % CAR_COLORS.length];
+      // the last 3 seconds as a trail
+      ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.55; ctx.beginPath();
+      let i = at[3], first = true;
+      while (i >= 0 && list[i][0] >= t - 3000) { const [x, y] = worldToScreen(list[i][3], list[i][4]); if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y); i--; }
+      ctx.stroke(); ctx.globalAlpha = 1;
+      const [x, y] = worldToScreen(at[0], at[1]);
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 8, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#0d0f12"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = "#0d0f12"; ctx.font = "700 10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+      ctx.fillText(k === "0" ? "P" : k, x - 3, y + 3.5);
+    }
+  }
+  $("racePick").onchange = (e) => pickRace(e.target.value);
+  $("racePlay").onclick = () => {
+    if (!race) return;
+    rplay.on = !rplay.on; rplay.last = performance.now();
+    if (rplay.on && rplay.t >= race.end) rplay.t = race.start;
+    syncRaceUi();
+  };
+  $("raceRate").onclick = () => { rplay.rate = rplay.rate === 1 ? 4 : rplay.rate === 4 ? 16 : rplay.rate === 16 ? 0.25 : 1; showRace(); };
+  $("raceTime").oninput = (e) => { if (!race) return; rplay.t = race.start + (race.end - race.start) * e.target.value / 1000; syncRaceUi(); dirty = true; };
+
+  // ---------------------------------------------------------------- AI cars 1-5 and their drivers
+  // ai/<track>: {cars: {"1": {source: "gt3" | "line" | "drive:<id>", pace, speedPct, brakeM, mistakes, aggression, avoid,
+  //   driver, driverName}, ...}, savedAt}  (a car given a driver is saved with that driver's settings, so the export needs no roster)
+  // settings/drivers: {drivers: [{id, name, style, pace, speedPct, brakeM, mistakes, aggression, avoid}], savedAt} (also kept in this browser)
+  const SPEEDS = [0, 1, 2, 3, 5, 8], BRAKES = [0, 2, 5, 10, 15], PACES = [0.94, 0.96, 0.97, 0.98, 0.99, 1, 1.01, 1.02];
+  const MISTAKES = ["none", "rare", "sometimes", "often"], PASSING = ["cautious", "normal", "aggressive"], CONTACT = ["relaxed", "normal", "careful"];
+  const DEFAULT_DRIVERS = [
+    { id: "d1", name: "Kenji Arata", style: "The metronome: the same lap, every lap", pace: 1, speedPct: 1, brakeM: 2, mistakes: 0, aggression: 1, avoid: 2 },
+    { id: "d2", name: "Sofia Lindqvist", style: "Late braker: dives down the inside", pace: 1, speedPct: 2, brakeM: 10, mistakes: 1, aggression: 2, avoid: 1 },
+    { id: "d3", name: "Dale Brennan", style: "Charger: quick, rough, leans on people", pace: 1.01, speedPct: 3, brakeM: 5, mistakes: 2, aggression: 2, avoid: 0 },
+    { id: "d4", name: "Amélie Duret", style: "Smooth and tidy: hard to pass, never touches anyone", pace: 0.99, speedPct: 1, brakeM: 2, mistakes: 0, aggression: 0, avoid: 2 },
+    { id: "d5", name: "Tomás Varga", style: "Wild card: brilliant one lap, in the gravel the next", pace: 1, speedPct: 8, brakeM: 15, mistakes: 3, aggression: 2, avoid: 0 },
+    { id: "d6", name: "Rhys Calder", style: "Rookie: a little slow, nervous in traffic", pace: 0.96, speedPct: 5, brakeM: 10, mistakes: 3, aggression: 0, avoid: 2 },
+    { id: "d7", name: "Haruto Moriyama", style: "Veteran: steady, picks his moment", pace: 0.99, speedPct: 2, brakeM: 5, mistakes: 1, aggression: 1, avoid: 2 },
+    { id: "d8", name: "Nadia Okafor", style: "Opportunist: quick, pounces on mistakes", pace: 1, speedPct: 3, brakeM: 5, mistakes: 1, aggression: 2, avoid: 1 },
+  ];
+  let roster = DEFAULT_DRIVERS.map((d) => ({ ...d }));
+  try { const s = JSON.parse(localStorage.getItem("drivers") || "null"); if (Array.isArray(s) && s.length) roster = s; } catch (e) {}
+  const KNOBS = ["pace", "speedPct", "brakeM", "mistakes", "aggression", "avoid"];
+  function knobsBrief(v) {
+    const bits = [];
+    if (v.pace !== 1) bits.push("pace " + Math.round(v.pace * 100) + "%");
+    if (v.speedPct) bits.push("±" + v.speedPct + "% speed");
+    if (v.brakeM) bits.push("±" + v.brakeM + " m braking");
+    if (v.mistakes) bits.push(MISTAKES[v.mistakes] + " mistakes");
+    if (v.aggression !== 1) bits.push(PASSING[v.aggression] + " passing");
+    if (v.avoid !== 1) bits.push(CONTACT[v.avoid] + " on contact");
+    return bits.length ? bits.join(" · ") : "same pace every lap, no mistakes";
+  }
+  // the six settings as selects (a car card and a driver card use the same ones); ids <pre>Pace<post> etc.
+  function knobSelects(pre, post, v) {
+    const mk = (name, list, text, val) => {
+      const s = document.createElement("select"); s.id = pre + name + post;
+      list.forEach((n, i) => { const o = document.createElement("option"); o.value = text ? String(i) : String(n); o.textContent = text ? n : name === "Pace" ? Math.round(n * 100) + "%" : n ? "±" + n + (name === "Spd" ? "%" : " m") : "none"; s.appendChild(o); });
+      s.value = String(val); if (s.selectedIndex < 0) s.value = text ? "1" : String(list.reduce((a, b) => (Math.abs(b - val) < Math.abs(a - val) ? b : a)));
+      return s;
+    };
+    return { pace: mk("Pace", PACES, false, v.pace ?? 1), speedPct: mk("Spd", SPEEDS, false, v.speedPct || 0), brakeM: mk("Brk", BRAKES, false, v.brakeM || 0),
+      mistakes: mk("Err", MISTAKES, true, v.mistakes ?? 0), aggression: mk("Agg", PASSING, true, v.aggression ?? 1), avoid: mk("Avd", CONTACT, true, v.avoid ?? 1) };
+  }
+  const knobValues = (K) => Object.fromEntries(KNOBS.map((k) => [k, +K[k].value]));
+  function setKnobs(K, v) { for (const k of KNOBS) { K[k].value = String(v[k]); if (K[k].selectedIndex < 0) K[k].selectedIndex = 0; } }
+  function knobFields(K) {
+    const field = (label, s) => { const l = document.createElement("label"); l.append(document.createTextNode(label), s); return l; };
+    return [field("Pace", K.pace), field("Speed", K.speedPct), field("Braking", K.brakeM), field("Mistakes", K.mistakes), field("Passing", K.aggression), field("Contact", K.avoid)];
+  }
+  function fillDriverOptions(sel, value) {
+    sel.textContent = "";
+    const o = document.createElement("option"); o.value = ""; o.textContent = "No driver: set by hand"; sel.appendChild(o);
+    for (const d of roster) { const p = document.createElement("option"); p.value = d.id; p.textContent = d.name || "(no name)"; sel.appendChild(p); }
+    sel.value = roster.some((d) => d.id === value) ? value : "";
+  }
+  // one card per car: its driver, what it drives and a one-line summary; its settings open below (one car at a time)
+  function aiRows(saved) {
+    const box = $("aicars"); box.textContent = "";
+    const edited = (d) => { const n = d.edits && d.edits.zones ? Object.keys(d.edits.zones).length : 0; return n ? " · " + n + " braking zone" + (n > 1 ? "s" : "") + " edited" : ""; };
+    const opts = GT4_HOST ? [["gt3", "GT4's own AI"]] : [["gt3", "GT3's own AI"], ["line", "My saved line"]].concat(drives.map((d) => ["drive:" + d.id, "Lap " + fmtLap(d.lapTimeMs) + " · " + (d.driver === "player" ? "you" : d.driver) + edited(d)]));
+    for (let k = 1; k <= 5; k++) {
+      const cur = { source: "gt3", pace: 1, speedPct: 0, brakeM: 0, mistakes: 0, aggression: 1, avoid: 1, ...((saved && saved.cars && saved.cars[k]) || {}) };
+      const row = document.createElement("details"); row.className = "aicar"; row.setAttribute("name", "aicar");
+      const sum = document.createElement("summary");
+      const b = document.createElement("b"); b.textContent = "Car " + k;
+      // GT4: the car this AI car drove in your last recorded race (gt4RaceLab.exe reads the recorder's race file)
+      if (GT4_HOST && lastCars[k]) { const cn = document.createElement("small"); cn.className = "dim"; cn.textContent = " " + lastCars[k]; b.appendChild(cn); }
+      const src = document.createElement("span"); src.className = "src";
+      const brief = document.createElement("small");
+      sum.append(b, src, brief); row.appendChild(sum);
+      const set = document.createElement("div"); set.className = "aiset";
+      const wide = (label, s) => { const l = document.createElement("label"); l.className = "wide"; l.append(document.createTextNode(label), s); return l; };
+      const drv = document.createElement("select"); drv.id = "aiDrv" + k; fillDriverOptions(drv, cur.driver);
+      const sel = document.createElement("select"); sel.id = "aiSrc" + k;
+      for (const [v, t] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
+      sel.value = opts.some((o) => o[0] === cur.source) ? cur.source : "gt3";
+      const K = knobSelects("ai", String(k), cur);
+      set.append(wide("Driver", drv), wide("Drives", sel), ...knobFields(K));
+      row.appendChild(set);
+      // a driver sets the six settings (shown, not editable here: change the driver below)
+      row.sync = () => {
+        const d = roster.find((x) => x.id === drv.value);
+        if (d) setKnobs(K, d);
+        for (const k2 of KNOBS) K[k2].disabled = !!d;
+        const line = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : "";
+        src.textContent = d ? (d.name || "(no name)") + " · " + line : line;
+        brief.textContent = d ? (d.style ? d.style + " · " : "") + knobsBrief(d) : knobsBrief(knobValues(K));
+        // GT3's own AI drives with its own settings: the ones here count once the car drives a line
+        if (GT4_HOST) brief.textContent = d ? (d.style ? d.style + " · " : "") + "GT4's own AI drives; this name shows in GT4" : "GT4's own AI, with its car's name";
+        else if (sel.value === "gt3" && (d || brief.textContent !== knobsBrief({ pace: 1, speedPct: 0, brakeM: 0, mistakes: 0, aggression: 1, avoid: 1 })))
+          brief.textContent = "Not used while " + (GT4_HOST ? "GT4's own AI" : "GT3's own AI") + " drives: pick a line under Drives";
+      };
+      set.addEventListener("change", row.sync); row.sync();
+      box.appendChild(row);
+    }
+  }
+  function refreshCars() {  // the roster changed: names in the car cards, and the settings of the cars those drivers drive
+    for (let k = 1; k <= 5; k++) {
+      const drv = $("aiDrv" + k);
+      if (!drv) continue;
+      fillDriverOptions(drv, drv.value);
+      drv.closest(".aicar").sync();
+    }
+  }
+  // GT4: the cars of your last recorded race (AI car k: the k-th car that isn't yours), from /api/racecars
+  let lastCars = {};
+  async function loadLastCars() {
+    if (!GT4_HOST || !(window.claude && window.claude.local)) return;
+    try {
+      const r = await fetch("/api/racecars", { cache: "no-store", headers: { "X-RaceLab": "1" } });
+      if (!r.ok) return;
+      const j = await r.json(); lastCars = {};
+      for (const c of j.cars || []) if (/^ai\d+$/.test(c.who)) lastCars[+c.who.slice(2)] = c.car;
+    } catch (e) { note("racecars failed: " + (e && e.message)); }
+  }
+  async function loadAi(id) {
+    await loadLastCars();
+    let saved = null;
+    if (db) { try { const s = await db.doc("ai/" + id).get(); if (s.exists) saved = s.data(); } catch (e) {} }
+    if (T && T.id === id) aiRows(saved);
+  }
+  // the drivers: one card each (name, style, the six settings); every change is kept straight away
+  let rosterTimer = 0;
+  function saveRoster() {
+    try { localStorage.setItem("drivers", JSON.stringify(roster)); } catch (e) {}
+    clearTimeout(rosterTimer);
+    rosterTimer = setTimeout(async () => {
+      if (!db) { $("drvStatus").textContent = "Drivers kept in this browser (the shared store isn't open here)."; return; }
+      try {
+        await db.doc("settings/drivers").set({ drivers: roster, savedAt: new Date().toISOString() });
+        $("drvStatus").textContent = "Drivers saved " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ".";
+      } catch (e) { $("drvStatus").textContent = "Couldn't save the drivers (" + (e && e.code || "error") + "); they're kept in this browser."; }
+    }, 700);
+  }
+  async function loadDrivers() {
+    if (!db) return;
+    try {
+      const s = await db.doc("settings/drivers").get();
+      if (!s.exists || !Array.isArray(s.data().drivers) || !s.data().drivers.length) return;
+      roster = s.data().drivers;
+      try { localStorage.setItem("drivers", JSON.stringify(roster)); } catch (e) {}
+      renderDrivers(); refreshCars();
+    } catch (e) { note("drivers failed: " + (e && (e.code || e.message))); }
+  }
+  const initials = (n) => (n || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  // a button that asks once more before it acts (the viewer has no confirm dialogs)
+  function twoStep(btn, ask, act) {
+    const label = btn.textContent; let armed = 0;
+    btn.onclick = () => {
+      if (armed) { clearTimeout(armed); armed = 0; btn.textContent = label; act(); return; }
+      btn.textContent = ask; armed = setTimeout(() => { armed = 0; btn.textContent = label; }, 3000);
+    };
+  }
+  function renderDrivers(openId) {
+    const box = $("drivers"); box.textContent = "";
+    for (const d of roster) {
+      const row = document.createElement("details"); row.className = "aicar"; row.setAttribute("name", "driver");
+      if (d.id === openId) row.open = true;
+      const sum = document.createElement("summary");
+      const b = document.createElement("b"); b.textContent = initials(d.name);
+      const nm = document.createElement("span"); nm.className = "src";
+      const brief = document.createElement("small");
+      sum.append(b, nm, brief); row.appendChild(sum);
+      const set = document.createElement("div"); set.className = "aiset";
+      const text = (id, val, max, ph) => { const i = document.createElement("input"); i.type = "text"; i.id = id; i.value = val || ""; i.maxLength = max; if (ph) i.placeholder = ph; return i; };
+      const wide = (label, el) => { const l = document.createElement("label"); l.className = "wide"; l.append(document.createTextNode(label), el); return l; };
+      const name = text("dv-" + d.id + "-name", d.name, 40), style = text("dv-" + d.id + "-style", d.style, 90, "How they drive, in a few words");
+      const K = knobSelects("dv-" + d.id + "-", "", d);
+      const del = document.createElement("button"); del.className = "wide"; del.textContent = "Remove driver";
+      set.append(wide("Name", name), wide("Style", style), ...knobFields(K), del);
+      row.appendChild(set);
+      const show = () => { b.textContent = initials(d.name); nm.textContent = d.name || "(no name)"; brief.textContent = (d.style ? d.style + " · " : "") + knobsBrief(d); };
+      const change = () => { d.name = name.value.trim(); d.style = style.value.trim(); Object.assign(d, knobValues(K)); show(); saveRoster(); refreshCars(); };
+      set.addEventListener("input", change); set.addEventListener("change", change);
+      twoStep(del, "Click again to remove " + (d.name || "this driver"), () => { roster = roster.filter((x) => x !== d); saveRoster(); renderDrivers(); refreshCars(); });
+      show();
+      box.appendChild(row);
+    }
+    if (!roster.length) { const p = document.createElement("p"); p.className = "dim"; p.textContent = "No drivers: add one, or put back the default eight."; box.appendChild(p); }
+  }
+  $("drvAdd").onclick = () => {
+    const d = { id: "d" + Date.now().toString(36), name: "New driver", style: "", pace: 1, speedPct: 2, brakeM: 2, mistakes: 1, aggression: 1, avoid: 1 };
+    roster.push(d); saveRoster(); renderDrivers(d.id); refreshCars();
+    const i = $("dv-" + d.id + "-name"); if (i) { i.focus(); i.select(); }
+  };
+  twoStep($("drvReset"), "Click again: this replaces every driver", () => { roster = DEFAULT_DRIVERS.map((d) => ({ ...d })); saveRoster(); renderDrivers(); refreshCars(); });
+  $("aiSave").onclick = async () => {
+    if (!db) { $("aiStatus").textContent = "Saving needs this page opened on claude.ai while signed in."; return; }
+    const cars = {};
+    for (let k = 1; k <= 5; k++) {
+      const d = roster.find((x) => x.id === $("aiDrv" + k).value);
+      cars[k] = { source: $("aiSrc" + k).value, pace: +$("aiPace" + k).value, speedPct: +$("aiSpd" + k).value, brakeM: +$("aiBrk" + k).value,
+        mistakes: +$("aiErr" + k).value, aggression: +$("aiAgg" + k).value, avoid: +$("aiAvd" + k).value };
+      if (d) { cars[k].driver = d.id; cars[k].driverName = d.name; if (d.style) cars[k].driverStyle = d.style; }
+    }
+    $("aiSave").disabled = true;
+    const doc = { track: T.id, name: T.name, cars, savedAt: new Date().toISOString() }, t = T;
+    try {
+      await db.doc("ai/" + T.id).set(doc);
+      const at = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      $("aiStatus").textContent = window.claude && window.claude.local ? "Saved " + at + "; writing the game's files…" : "Sent " + at + ". Tell Claude: “AI cars set on " + T.name + "”.";
+      if (window.claude && window.claude.local) $("aiStatus").textContent = await aiToGame(doc, t);
+    } catch (e) {
+      $("aiStatus").textContent = "Couldn't save (" + (e && (e.code || e.message) || "error") + "). Try again in a moment.";
+    } finally { $("aiSave").disabled = false; }
+  };
+  // served by the GT3 launcher: the AI cars' files written straight into the game folder (racelab-data\ai-lines, which
+  // the launcher gives the game when its Race Lab page has "AI cars 1-5" on the Race Lab's), the same files GT4-WORK
+  // tools/ai_cars_export.py writes: <course>.txt (read at the start of each race) and a line file per recorded lap used
+  function aiLineText(rows, v, step = 2) {  // ai_line_from_lap.py's line_text: from the line, each 2 m step's frames averaged
+    const li = lineIndex(rows), acc = new Map();
+    let top = -Infinity;
+    for (let i = li; i < rows.length; i++) top = Math.max(top, rows[i][C.lap]);
+    const lap = (Math.floor(top / step) + 1) * step, n = Math.ceil(lap / step);
+    for (let i = li; i < rows.length; i++) {
+      const m = rows[i][C.lap];
+      if (!(m >= 0 && m < lap + step)) continue;
+      const k = Math.floor(m / step) % n;
+      let a = acc.get(k); if (!a) acc.set(k, (a = [0, 0, 0, 0]));
+      a[0] += rows[i][C.x]; a[1] += rows[i][C.z]; a[2] += v[i]; a[3]++;
+    }
+    // 3 decimals as Python's "%.3f" gives them (an exact half goes to the even digit; toFixed would round it up)
+    const f3 = (x) => {
+      // (toFixed(60) is the exact value: a double here has at most 52 binary places past the point)
+      if (!/\.\d{3}50*$/.test(Math.abs(x).toFixed(60))) return x.toFixed(3);
+      const lo = Math.trunc(Math.abs(x) * 1000);  // (exact: x is a whole number of halves of 0.001)
+      return (x < 0 ? "-" : "") + ((lo % 2 === 0 ? lo : lo + 1) / 1000).toFixed(3);
+    };
+    const out = ["gt3-autopilot-line 1 " + lap.toFixed(2) + " " + step];
+    for (const k of [...acc.keys()].sort((a, b) => a - b)) {
+      const [x, z, s, c] = acc.get(k);
+      out.push(k + " " + f3(x / c) + " " + f3(z / c) + " " + f3(s / c) + " " + Math.min(c, 30) + " " + Math.min(c, 30) + " 1");
+    }
+    return out.join("\n") + "\n";
+  }
+  // served by the GT4 launcher's gt4RaceLab.exe: the drivers' names to GT4 (racelab-data\ai-lines\gt4-drivers.txt, which GT4 reads
+  // from the next race while the launcher's Race Lab has "Drivers' names in GT4" on). GT4's own AI still drives: only the names go.
+  async function aiToGt4(doc, t) {
+    const out = ["gt4-ai-drivers 1", "# " + (doc.name || doc.track) + " (" + doc.track + "), from the Race Lab (saved " + doc.savedAt + ")",
+      "# AI car k is the k-th car in the race that isn't yours; GT4's own AI drives every car"];
+    const named = [];
+    for (let k = 1; k <= 5; k++) {
+      const c = doc.cars[k] || {};
+      if (!c.driverName) continue;
+      out.push("car " + k + " " + c.driverName.replace(/[\r\n]+/g, " "));
+      if (c.driverStyle) out.push("style " + k + " " + c.driverStyle.replace(/[\r\n]+/g, " "));
+      named.push(c.driverName + " (car " + k + ")");
+    }
+    const r = await fetch("/api/ailines?name=gt4-drivers.txt", { method: "PUT", headers: { "X-RaceLab": "1", "Content-Type": "text/plain; charset=utf-8" }, body: out.join("\n") + "\n" });
+    if (!r.ok) throw new Error("gt4-drivers.txt: HTTP " + r.status);
+    return named.length
+      ? "Sent to GT4: " + named.join(", ") + ". Their names show from the next race, in every GT4 race (the timing tower's Driver names, the telemetry and phone pages); GT4's own AI drives the cars."
+      : "Sent to GT4: no drivers picked, so GT4's AI cars show their car names again.";
+  }
+  async function aiToGame(doc, t) {
+    // what the game calls the course: GT3's own by its runway's CRC, a converted one by its folder's name
+    const crc = t.group === "GT3" ? Object.keys(RUNWAYS).find((c) => RUNWAYS[c] === t.id) : null;
+    if (GT4_HOST) return aiToGt4(doc, t);
+    if (t.group === "GT4") return "Saved. " + t.name + " is a GT4 course: GT3 can't drive it until it's converted, so nothing went to the game.";
+    if (t.group === "GT3" && !crc) return "Saved, but the game's name for " + t.name + " wasn't found (the track list didn't load): nothing went to the game.";
+    const course = crc ? "runway-" + crc : "replace-" + t.id;
+    const put = async (name, text) => {
+      const r = await fetch("/api/ailines?name=" + encodeURIComponent(name), { method: "PUT", headers: { "X-RaceLab": "1", "Content-Type": "text/plain" }, body: text });
+      if (!r.ok) throw new Error(name + ": HTTP " + r.status);
+    };
+    const out = ["gt3-ai-cars 1", "# " + (doc.name || doc.track) + " (" + doc.track + "), from the Racing Line Editor (saved " + doc.savedAt + ")"];
+    const made = {}, notes = [];
+    for (let k = 1; k <= 5; k++) {
+      const c = doc.cars[k] || { source: "gt3" };
+      let src = c.source || "gt3";
+      if (src === "line") { notes.push("car " + k + " (My saved line: not from here yet, ask Claude)"); src = "gt3"; }
+      if (c.driverName) out.push("# car " + k + ": " + c.driverName + (c.driverStyle ? " (" + c.driverStyle + ")" : "") + (src === "gt3" ? " - GT3's own AI drives, so the driver's settings aren't used" : ""));
+      if (src === "gt3") { out.push("car " + k + " gt3"); continue; }
+      if (!made[src]) {
+        const id = src.slice(6);  // "drive:<id>"
+        let d = drives.find((q) => q.id === id);
+        if (!d) { const s = await db.doc("drives/" + id).get(); if (!s.exists) throw new Error("the recorded lap " + id + " isn't in the store"); d = { id, ...s.data() }; }
+        if (!d.rows) d.rows = (await db.collection("drives/" + id + "/rows").get()).docs.map((q) => q.data()).sort((a, b) => a.i - b.i).flatMap((q) => q.rows);
+        if (!d.rows.length) throw new Error("the recorded lap " + id + " has no frames");
+        made[src] = doc.track + "-" + id + ".txt";
+        await put(made[src], aiLineText(d.rows, editedLap(d).v));
+      }
+      const pace = +(c.pace ?? 1);
+      out.push("car " + k + " line " + made[src] + " speed " + (+(c.speedPct || 0)) + " brake " + (+(c.brakeM || 0)) + " mistakes " + (c.mistakes ?? 0) +
+        " passing " + (c.aggression ?? 1) + " avoid " + (c.avoid ?? 1) + (Math.abs(pace - 1) > 1e-9 ? " pace " + pace : ""));
+    }
+    await put(course + ".txt", out.join("\n") + "\n");  // last: the lines it names are there first
+    const lines = Object.keys(made).length;
+    return "In the game from the next race (" + (lines ? lines + " recorded lap" + (lines > 1 ? "s" : "") : "GT3's own AI for every car") + "), with the launcher's Race Lab page set to " +
+      "“AI cars 1–5: The Race Lab's”." + (notes.length ? " GT3's own AI for " + notes.join(", ") + "." : "");
+  }
+
+  function frame(now) {
+    if (play.on && drive) {
+      const end = drive.rows[drive.rows.length - 1][C.t];
+      play.t = Math.min(end, play.t + (now - play.last) * play.rate);
+      play.last = now;
+      if (play.t >= end) { play.on = false; $("lapPlay").textContent = "Play"; }
+      dirty = true;
+    }
+    if (rplay.on && race) {
+      rplay.t = Math.min(race.end, rplay.t + (now - rplay.last) * rplay.rate);
+      rplay.last = now;
+      if (rplay.t >= race.end) rplay.on = false;
+      if (now - (rplay.ui || 0) > 100) { rplay.ui = now; syncRaceUi(); }
+      dirty = true;
+    }
+    zoomStep(now);
+    // one bad frame must never stop the drawing for good
+    try { if (dirty) { dirty = false; draw(); } }
+    catch (e) { note("draw failed: " + (e && e.message)); }
+    requestAnimationFrame(frame);
+  }
+  function viewChanged() { dirty = true; clearTimeout(idleTimer); idleTimer = setTimeout(() => { baseDirty = true; dirty = true; }, 140); }
+  let fitPending = false;  // fitted while the map area had no size (the page opening in a panel): fit again once it has one
+  function fit() {
+    if (!T) return;
+    zoomGoal = null;
+    const r = stage.getBoundingClientRect(), [x0, z0, x1, z1] = T.bounds;
+    fitPending = r.width < 40 || r.height < 40;
+    view.cx = (x0 + x1) / 2; view.cz = (z0 + z1) / 2;
+    const c = Math.abs(Math.cos(view.r)), n = Math.abs(Math.sin(view.r)), w = x1 - x0, h = z1 - z0;
+    view.s = Math.max(0.02, Math.min(r.width / (w * c + h * n), r.height / (w * n + h * c)) * 0.92);
+    baseDirty = true; dirty = true;
+  }
+  // turning the map: drag the handle round the map's centre; arrow keys 5°; double-click straightens
+  function setTurn(rad) {
+    view.r = Math.atan2(Math.sin(rad), Math.cos(rad));
+    $("rotDeg").textContent = Math.round(view.r * 180 / Math.PI) + "°";
+    try { if (T) localStorage.setItem("rot:" + T.id, String(view.r)); } catch (e) {}
+    dirty = true;
+  }
+  {
+    const h = $("rotate"); let turn = null;
+    const angleOf = (e) => { const r = stage.getBoundingClientRect(); return Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2)); };
+    h.addEventListener("pointerdown", (e) => { h.setPointerCapture(e.pointerId); turn = { a: angleOf(e), r: view.r }; e.preventDefault(); });
+    h.addEventListener("pointermove", (e) => { if (turn) setTurn(turn.r + angleOf(e) - turn.a); });
+    const stop = () => { turn = null; };
+    h.addEventListener("pointerup", stop); h.addEventListener("pointercancel", stop);
+    h.addEventListener("dblclick", () => setTurn(0));
+    h.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); setTurn(view.r + (e.key === "ArrowRight" ? 1 : -1) * Math.PI / 36); }
+    });
+  }
+  function zoomAt(f, sx, sy) {
+    const [wx, wz] = screenToWorld(sx, sy);
+    view.s = Math.min(80, Math.max(0.02, view.s * f));
+    const r = stage.getBoundingClientRect();
+    const [dx, dz] = screenToMap(sx - r.width / 2, sy - r.height / 2);
+    view.cx = wx - dx; view.cz = wz - dz;
+    viewChanged();
+  }
+  // smooth zoom: the wheel and the − / + buttons set the scale to head for; each frame goes part of the
+  // way there (about 90 % in 140 ms), keeping the spot under the pointer in place
+  let zoomGoal = null;  // {s, sx, sy, last}
+  const calm = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  function zoomTowards(f, sx, sy) {
+    if (calm) { zoomAt(f, sx, sy); return; }
+    const from = zoomGoal ? zoomGoal.s : view.s;
+    zoomGoal = { s: Math.min(80, Math.max(0.02, from * f)), sx, sy, last: zoomGoal ? zoomGoal.last : performance.now() };
+    dirty = true;
+  }
+  function zoomStep(now) {
+    if (!zoomGoal) return;
+    const left = Math.log(zoomGoal.s / view.s), k = 1 - Math.exp(-Math.max(1, now - zoomGoal.last) / 60);
+    zoomGoal.last = now;
+    if (Math.abs(left) < 0.003) zoomFinish();
+    else zoomAt(Math.exp(left * k), zoomGoal.sx, zoomGoal.sy);
+  }
+  function zoomFinish() { if (zoomGoal) { const g = zoomGoal; zoomGoal = null; zoomAt(g.s / view.s, g.sx, g.sy); } }
+
+  // ---------------------------------------------------------------- input
+  const ptrs = new Map();
+  let drag = null;  // {type: "pan" | "point" | "pinch", ...}
+  function local(e) { const r = stage.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+  function hitPoint(sx, sy) {
+    let best = -1, bd = 16;
+    points.forEach((p, i) => { const [x, y] = worldToScreen(p[0], p[1]); const d = Math.hypot(x - sx, y - sy); if (d < bd) { bd = d; best = i; } });
+    return best;
+  }
+  canvas.addEventListener("pointerdown", (e) => {
+    zoomFinish();  // a zoom still on its way lands first
+    // the wheel (middle) button: drag sideways to turn the map (to the right = clockwise), as the handle does;
+    // the right button does nothing on the map
+    if (e.pointerType === "mouse" && e.button !== 0) {
+      if (e.button !== 1) return;
+      canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, local(e));
+      drag = { type: "turn", x: e.clientX, r: view.r }; stage.classList.add("turning"); return;
+    }
+    canvas.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, local(e));
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      drag = { type: "pinch", d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+      return;
+    }
+    const [sx, sy] = local(e);
+    // editing a braking zone: a click on the lap places the brake / throttle point (a drag still pans)
+    if (bz) { drag = { type: "tap", bz: true, start: [sx, sy], last: [sx, sy], moved: false }; return; }
+    const hp = hitPoint(sx, sy);
+    if (hp >= 0) { pushUndo(); selected = hp; drag = { type: "point", i: hp, moved: false }; $("delPoint").disabled = $("mapDel").disabled = false; dirty = true; }
+    else drag = { type: mode === "draw" ? "tap" : "pan", start: [sx, sy], last: [sx, sy], moved: false };
+  });
+  // a right click on a braking point's "B": its menu (anywhere else: the browser's own)
+  canvas.addEventListener("contextmenu", (e) => {
+    if (!drive || !layers.lap) return;
+    const [sx, sy] = local(e), hit = badgeHits.find((h) => Math.hypot(h[0] - sx, h[1] - sy) < 15);
+    if (!hit) return;
+    e.preventDefault();
+    openZoneMenu(hit[2], sx, sy);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    const [sx, sy] = local(e);
+    const w = screenToWorld(sx, sy);
+    $("cursor").textContent = "x " + w[0].toFixed(1) + "  z " + w[1].toFixed(1);
+    // over a braking point that can be edited: say so (it glows, the pointer, a tip)
+    const over = !drag && !bz ? badgeHits.find((h) => Math.hypot(h[0] - sx, h[1] - sy) < 15) : null;
+    setHover(over ? over[2] : -1);
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, [sx, sy]);
+    if (!drag) return;
+    if (drag.type === "pinch" && ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      { const [dx, dz] = screenToMap(m[0] - drag.m[0], m[1] - drag.m[1]); view.cx -= dx; view.cz -= dz; }
+      zoomAt(d / drag.d, m[0], m[1]);
+      drag.d = d; drag.m = m;
+    } else if (drag.type === "turn") {
+      setTurn(drag.r + (e.clientX - drag.x) * Math.PI / 360);  // half a degree a pixel
+    } else if (drag.type === "point") {
+      points[drag.i] = [w[0], w[1]]; drag.moved = true; rebuildSpline();
+    } else if (drag.type === "pan" || drag.type === "tap") {
+      if (Math.hypot(sx - drag.start[0], sy - drag.start[1]) > 6) { drag.moved = true; drag.type = "pan"; }
+      if (drag.type === "pan") {
+        const [dx, dz] = screenToMap(sx - drag.last[0], sy - drag.last[1]); view.cx -= dx; view.cz -= dz; drag.last = [sx, sy]; viewChanged();
+      }
+    }
+  });
+  function endPointer(e) {
+    ptrs.delete(e.pointerId);
+    if (!drag) return;
+    if (drag.type === "tap" && !drag.moved) { const [sx, sy] = local(e); if (drag.bz) bzPlace(sx, sy); else insertPoint(screenToWorld(sx, sy)); }
+    if (drag.type === "point") { if (!drag.moved) undoStack.pop(); else saveDraft(); }
+    if (drag.type === "pinch" && ptrs.size === 1) { drag = null; return; }
+    stage.classList.remove("turning");
+    drag = null;
+  }
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", endPointer);
+  canvas.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });  // the wheel button turns the map: no auto-scroll
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const [sx, sy] = local(e);
+    // lines / pages as pixels; a touchpad pinch arrives as the wheel with Ctrl held, in small steps
+    const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+    zoomTowards(Math.exp(Math.max(-0.6, Math.min(0.6, -dy * (e.ctrlKey ? 0.01 : 0.0015)))), sx, sy);
+  }, { passive: false });
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "SELECT") return;
+    if ((e.key === "Delete" || e.key === "Backspace") && selected >= 0) { e.preventDefault(); deletePoint(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+    if (e.key === "Escape") {
+      if (!$("zoneMenu").hidden) { $("zoneMenu").hidden = true; return; }
+      if (POPS.some(([, p]) => !$(p).hidden)) { togglePop(null); return; }
+      if (bz) { bzExit(); return; }
+      selected = -1; rebuildSpline();
+    }
+  });
+  function deletePoint() { if (selected < 0) return; pushUndo(); points.splice(selected, 1); selected = -1; rebuildSpline(); saveDraft(); }
+  function undo() { if (!undoStack.length) return; points = undoStack.pop(); selected = -1; rebuildSpline(); saveDraft(); }
+  function setMode(m) {
+    mode = m; stage.classList.toggle("draw", m === "draw");
+    $("modeMove").setAttribute("aria-pressed", m === "move"); $("modeDraw").setAttribute("aria-pressed", m === "draw");
+    $("hintText").textContent = m === "draw" ? "Tap the track to add points. Drag a point to move it." : "Drag to move the map. Drag a point to move it.";
+  }
+  $("modeMove").onclick = () => setMode("move");
+  $("modeDraw").onclick = () => setMode("draw");
+  $("zoomIn").onclick = () => { const r = stage.getBoundingClientRect(); zoomTowards(1.5, r.width / 2, r.height / 2); };
+  $("zoomOut").onclick = () => { const r = stage.getBoundingClientRect(); zoomTowards(1 / 1.5, r.width / 2, r.height / 2); };
+  $("zoomFit").onclick = fit;
+  $("undo").onclick = $("mapUndo").onclick = undo;
+  $("delPoint").onclick = $("mapDel").onclick = deletePoint;
+  $("reverse").onclick = $("mapReverse").onclick = () => setPoints(points.slice().reverse());
+  $("fromGt4").onclick = () => setPoints(T.gt4.map((p) => p.slice()));
+  $("fromAuto").onclick = () => setPoints(simplify(T.autopilot.concat([T.autopilot[0]]), 0.6).slice(0, -1).map((p) => p.slice()));
+  $("clearLine").onclick = () => setPoints([]);
+  // a racing line from the track's shape: the track centre every 5 m, the tarmac either side (1.5 m in
+  // from its edge), then the smoothest path through that room (least curvature: each point moved
+  // towards where its neighbours two either side put it, kept inside its room), as editable points
+  // the smoothest line from a path round the lap: resampled every 5 m, each point moved onto the tarmac
+  // across the track (20 m either side: the stretch holding it, else the nearest), its room that
+  // stretch less 1.5 m each side, then least curvature inside the room
+  function lineFrom(seed) {
+    const { cen, nx, nz, lo, hi } = trackRooms(seed), m = cen.length;
+    const off = new Float64Array(m), px = (i) => cen[i][0] + nx[i] * off[i], pz = (i) => cen[i][1] + nz[i] * off[i];
+    for (let it = 0; it < 3000; it++)
+      for (let i = 0; i < m; i++) {
+        const a2 = (i - 2 + m) % m, a1 = (i - 1 + m) % m, b1 = (i + 1) % m, b2 = (i + 2) % m;
+        const tx = (4 * (px(a1) + px(b1)) - px(a2) - px(b2)) / 6 - cen[i][0];
+        const tz = (4 * (pz(a1) + pz(b1)) - pz(a2) - pz(b2)) / 6 - cen[i][1];
+        off[i] = Math.min(hi[i], Math.max(lo[i], tx * nx[i] + tz * nz[i]));
+      }
+    const path = [];
+    for (let i = 0; i < m; i++) path.push([px(i), pz(i)]);
+    // how good: the share on the tarmac, places it doubles back (a loop in the start path), its length
+    let on = 0, back = 0, len = 0;
+    for (let i = 0; i < m; i++) {
+      const p0 = path[(i - 1 + m) % m], p1 = path[i], p2 = path[(i + 1) % m];
+      if (onRoad(p1[0], p1[1])) on++;
+      if ((p1[0] - p0[0]) * (p2[0] - p1[0]) + (p1[1] - p0[1]) * (p2[1] - p1[1]) < 0) back++;
+      len += Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    }
+    return { path, on: on / m, back, len };
+  }
+  // stations every ~5 m round a path, each moved onto the tarmac across the track (20 m either side: the
+  // stretch holding it, else the nearest) with its room: that stretch less 1.5 m each side (lo / hi from
+  // the station along the normal nx / nz)
+  function trackRooms(seed) {
+    const cen = [];
+    {
+      const L = seed.length; let total = 0; const seg = [];
+      for (let i = 0; i < L; i++) { const a = seed[i], b = seed[(i + 1) % L], d = Math.hypot(b[0] - a[0], b[1] - a[1]); seg.push(d); total += d; }
+      const n = Math.max(60, Math.round(total / 5));
+      let i = 0, acc = 0;
+      for (let k = 0; k < n; k++) {
+        const want = total * k / n;
+        while (i < L - 1 && acc + seg[i] < want) { acc += seg[i]; i++; }
+        const f = seg[i] > 0 ? (want - acc) / seg[i] : 0, a = seed[i], b = seed[(i + 1) % L];
+        cen.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+      }
+    }
+    const m = cen.length, nx = new Float64Array(m), nz = new Float64Array(m), lo = new Float64Array(m), hi = new Float64Array(m);
+    for (let i = 0; i < m; i++) {
+      const a = cen[(i - 1 + m) % m], b = cen[(i + 1) % m];
+      let tx = b[0] - a[0], tz = b[1] - a[1]; const l = Math.hypot(tx, tz) || 1; tx /= l; tz /= l;
+      nx[i] = -tz; nz[i] = tx;
+    }
+    for (let i = 0; i < m; i++) {
+      const on = (t) => onRoad(cen[i][0] + nx[i] * t, cen[i][1] + nz[i] * t);
+      let best = null;
+      for (let t = -20; t <= 20; t += 0.5) {
+        if (!on(t)) continue;
+        let e = t; while (e + 0.5 <= 20 && on(e + 0.5)) e += 0.5;
+        const d = t <= 0 && e >= 0 ? 0 : Math.min(Math.abs(t), Math.abs(e));
+        if (!best || d < best.d) best = { a: t, b: e, d };
+        t = e;
+      }
+      if (!best) continue;
+      const mid = (best.a + best.b) / 2, half = (best.b - best.a) / 2;
+      cen[i] = [cen[i][0] + nx[i] * mid, cen[i][1] + nz[i] * mid];
+      lo[i] = -Math.max(0, half - 1.5); hi[i] = Math.max(0, half - 1.5);
+    }
+    return { cen, nx, nz, lo, hi };
+  }
+  function createLine() {
+    if (!T || T.progress.length < 4) return;
+    const starts = [];
+    if (T.autopilot.length > 50) starts.push(T.autopilot.map((q) => [q[0], q[1]]));
+    { const s = []; for (let k = 0, n = Math.max(60, Math.round(T.lap / 5)); k < n; k++) { const q = lapPoint(k * T.lap / n); if (q) s.push(q); } starts.push(s); }
+    let best = null;
+    for (const seed of starts) {
+      const r = lineFrom(seed);
+      const score = r.on - 0.02 * r.back;
+      if (!best || score > best.score + 0.002 || (Math.abs(score - best.score) <= 0.002 && r.len < best.len)) best = { ...r, score };
+    }
+    const path = best.path, m = path.length;
+    // simplify each half of the loop (a closed loop has no first-to-last chord to measure from)
+    const half = m >> 1, A = simplify(path.slice(0, half + 1), 0.5), B = simplify(path.slice(half).concat([path[0]]), 0.5);
+    const pts = A.slice(0, -1).concat(B.slice(0, -1));
+    setPoints(pts.map((q) => [Math.round(q[0] * 100) / 100, Math.round(q[1] * 100) / 100]));
+    status("Created a racing line from the track's shape (" + pts.length + " points): the smoothest path on the tarmac, 1.5 m in from its edges. Move points to change it, then save.");
+  }
+  $("makeLine").onclick = createLine;
+
+  // ---------------------------------------------------------------- AI trainer (runs on this device)
+  // The track as stations every ~5 m with the room on the tarmac across each (trackRooms); a line is an
+  // offset in each room. A lap is timed with a point-mass car: corner speed from the line's curvature
+  // and the grip, then accelerating (grip left over from cornering, power, drag) forward round the lap
+  // and braking backward. Each generation tries 24 changes to the best line - smooth bumps 15-200 m
+  // long, their size growing while changes succeed and shrinking while they don't - and keeps the
+  // fastest. Starts from the smoothest line (as Create racing line). No network: a Web Worker (or, where
+  // workers are refused, short slices on the page).
+  const CARS = {
+    road: { mu: 1.0, pw: 125, vmax: 62, drag: 0.00045, brake: 1.05 },   // ~200 PS / 1.25 t
+    sport: { mu: 1.15, pw: 210, vmax: 75, drag: 0.0004, brake: 1.08 },  // ~360 PS / 1.3 t
+    race: { mu: 1.55, pw: 380, vmax: 88, drag: 0.00055, brake: 1.1 },   // GT500 / Le Mans
+  };
+  function trainerCore() {  // the learning loop: the same code in the worker and on the page
+    let S = null, car = null, off = null, best = Infinity, first = Infinity, sigma = 1.2, gen = 0, stale = 0, speeds = null;
+    const g = 9.81;
+    function lap(o, keep) {
+      const m = S.m, X = new Float64Array(m), Z = new Float64Array(m), ds = new Float64Array(m), k = new Float64Array(m), v = new Float64Array(m);
+      for (let i = 0; i < m; i++) { X[i] = S.cx[i] + S.nx[i] * o[i]; Z[i] = S.cz[i] + S.nz[i] * o[i]; }
+      for (let i = 0; i < m; i++) { const j = (i + 1) % m; ds[i] = Math.hypot(X[j] - X[i], Z[j] - Z[i]) || 1e-3; }
+      const mug = car.mu * g, mub = mug * car.brake;
+      for (let i = 0; i < m; i++) {  // curvature through three points 2 stations apart (5 m stations are noisy)
+        const a = (i - 2 + m) % m, b = (i + 2) % m;
+        const ux = X[i] - X[a], uz = Z[i] - Z[a], wx = X[b] - X[i], wz = Z[b] - Z[i];
+        const cr = ux * wz - uz * wx, d = Math.hypot(ux, uz) * Math.hypot(wx, wz) * Math.hypot(X[b] - X[a], Z[b] - Z[a]);
+        k[i] = d > 1e-9 ? 2 * Math.abs(cr) / d : 0;
+      }
+      let vi = car.vmax;
+      for (let i = 0; i < m; i++) v[i] = k[i] > 1e-7 ? Math.min(car.vmax, Math.sqrt(mug / k[i])) : car.vmax;
+      const vc = v.slice();
+      vi = vc[0];
+      for (let pass = 0; pass < 2; pass++)   // accelerating, twice round so the lap joins up
+        for (let i = 0; i < m; i++) {
+          const j = (i + 1) % m, alat = vi * vi * k[i];
+          const avail = Math.sqrt(Math.max(0, mug * mug - alat * alat));
+          const acc = Math.min(avail, car.pw / Math.max(vi, 4)) - car.drag * vi * vi;
+          vi = Math.min(vc[j], Math.sqrt(Math.max(0, vi * vi + 2 * acc * ds[i])));
+          v[j] = vi;
+        }
+      for (let pass = 0; pass < 2; pass++)   // braking, backwards
+        for (let i = m - 1; i >= 0; i--) {
+          const j = (i + 1) % m, vj = v[j], alat = vj * vj * k[j];
+          const dec = Math.sqrt(Math.max(0, mub * mub - alat * alat)) + car.drag * vj * vj;
+          const lim = Math.sqrt(vj * vj + 2 * dec * ds[i]);
+          if (v[i] > lim) v[i] = lim;
+        }
+      let t = 0;
+      for (let i = 0; i < m; i++) t += 2 * ds[i] / Math.max(0.5, v[i] + v[(i + 1) % m]);
+      if (keep) speeds = v;
+      return t;
+    }
+    function gauss() { let u = 0, w = 0; while (!u) u = Math.random(); while (!w) w = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(6.2832 * w); }
+    function init(msg) {
+      S = msg.S; car = msg.car; sigma = 1.2; gen = 0; stale = 0;
+      off = msg.off ? Float64Array.from(msg.off) : new Float64Array(S.m);
+      if (!msg.off) {  // the smoothest line in the rooms
+        const m = S.m, px = (i) => S.cx[i] + S.nx[i] * off[i], pz = (i) => S.cz[i] + S.nz[i] * off[i];
+        for (let it = 0; it < 3000; it++)
+          for (let i = 0; i < m; i++) {
+            const a2 = (i - 2 + m) % m, a1 = (i - 1 + m) % m, b1 = (i + 1) % m, b2 = (i + 2) % m;
+            const tx = (4 * (px(a1) + px(b1)) - px(a2) - px(b2)) / 6 - S.cx[i], tz = (4 * (pz(a1) + pz(b1)) - pz(a2) - pz(b2)) / 6 - S.cz[i];
+            off[i] = Math.min(S.hi[i], Math.max(S.lo[i], tx * S.nx[i] + tz * S.nz[i]));
+          }
+      }
+      best = lap(off, true); first = msg.first || best;
+      if (msg.gen) gen = msg.gen;
+    }
+    function run(ms) {  // generations for about ms milliseconds; true while still learning
+      const t0 = Date.now(), m = S.m;
+      while (Date.now() - t0 < ms) {
+        gen++;
+        let won = null, wonT = best;
+        for (let c = 0; c < 24; c++) {
+          const cand = off.slice(), mid = Math.floor(Math.random() * m);
+          const w = 3 + Math.floor(Math.random() * Math.random() * 40), amp = sigma * gauss();
+          for (let d = -w; d <= w; d++) {
+            const i = (mid + d + m) % m, f = 0.5 * (1 + Math.cos(Math.PI * d / (w + 1)));
+            cand[i] = Math.min(S.hi[i], Math.max(S.lo[i], cand[i] + amp * f));
+          }
+          const t = lap(cand);
+          if (t < wonT - 1e-6) { wonT = t; won = cand; }
+        }
+        if (won) { off = won; best = wonT; sigma = Math.min(4, sigma * 1.1); stale = 0; }
+        else { sigma = Math.max(0.03, sigma * 0.96); stale++; }
+      }
+      lap(off, true);
+      return stale < 600;  // ~14,000 tries without a better lap: settled
+    }
+    function report() { return { gen, best, first, off: Array.from(off), speeds: Array.from(speeds), sigma }; }
+    return { init, run, report };
+  }
+  const trainer = { core: null, worker: null, running: false, track: null, trackName: "", carKey: null, rooms: null, rep: null, history: [], timer: 0,
+    lib: {}, libTrack: null, bar: Infinity, savedAt: 0, reset: 0 };
+  // Each car's settings (the same on every track) and its fastest line on each track:
+  //   settings/trainer          {cars: {road: {mu, pw, vmax, drag, brake}, ...}, savedAt}
+  //   trainer/<track>--<car>    {track, name, car, best (s), first, gen, top (km/h), m, off (m, 2 dp), settings, savedAt}
+  // both kept in this browser too (localStorage "trCars", "trained:<track>:<car>"), so they work without the store.
+  // A stored line is only replaced by a faster one timed with the same settings.
+  const CAR_NAMES = { road: "road car", sport: "sports car", race: "race car" };
+  const PS = 0.7355;  // W per kg in one PS per tonne
+  const carSet = {};
+  for (const k in CARS) carSet[k] = { ...CARS[k] };
+  try { const s = JSON.parse(localStorage.getItem("trCars") || "null"); if (s) for (const k in CARS) if (s[k]) Object.assign(carSet[k], s[k]); } catch (e) {}
+  const setKey = (s) => [s.mu.toFixed(2), Math.round(s.pw / PS), Math.round(s.vmax * 3.6), s.brake.toFixed(2), s.drag].join("|");
+  const setText = (s) => s.mu.toFixed(2) + " g · " + Math.round(s.pw / PS) + " PS/t · " + Math.round(s.vmax * 3.6) + " km/h · brakes " + s.brake.toFixed(2);
+  function showCarSet() {
+    const k = $("trCar").value, s = carSet[k], same = setKey(s) === setKey(CARS[k]);
+    $("trMu").value = s.mu.toFixed(2); $("trPw").value = Math.round(s.pw / PS); $("trVmax").value = Math.round(s.vmax * 3.6); $("trBrake").value = s.brake.toFixed(2);
+    $("trSetName").textContent = same ? "Default settings" : "Own settings";
+    $("trSetSum").textContent = setText(s);
+  }
+  let carSetTimer = 0;
+  function saveCarSettings() {
+    try { localStorage.setItem("trCars", JSON.stringify(carSet)); } catch (e) {}
+    clearTimeout(carSetTimer);
+    carSetTimer = setTimeout(() => {
+      if (db) db.doc("settings/trainer").set({ cars: carSet, savedAt: new Date().toISOString() }).catch((e) => note("car settings save failed: " + (e && (e.code || e.message))));
+    }, 800);
+  }
+  async function loadCarSettings() {
+    if (!db) return;
+    try {
+      const s = await db.doc("settings/trainer").get();
+      if (!s.exists || !s.data().cars) return;
+      const c = s.data().cars;
+      for (const k in CARS) if (c[k]) carSet[k] = { ...CARS[k], ...c[k] };
+      try { localStorage.setItem("trCars", JSON.stringify(carSet)); } catch (e) {}
+      if (T && !trainer.running) trainerReset();
+    } catch (e) { note("car settings failed: " + (e && (e.code || e.message))); }
+  }
+  function readCarSet() {  // only what was changed (the boxes show rounded values)
+    const k = $("trCar").value, s = carSet[k];
+    const num = (id, lo, hi) => { const v = parseFloat($(id).value); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null; };
+    const mu = num("trMu", 0.5, 2.5), pw = num("trPw", 40, 900), vmax = num("trVmax", 80, 420), brake = num("trBrake", 0.8, 1.5);
+    if (mu !== null && Math.abs(mu - s.mu) >= 0.005) s.mu = mu;
+    if (pw !== null && pw !== Math.round(s.pw / PS)) s.pw = pw * PS;
+    if (vmax !== null && vmax !== Math.round(s.vmax * 3.6)) s.vmax = vmax / 3.6;
+    if (brake !== null && Math.abs(brake - s.brake) >= 0.005) s.brake = brake;
+    saveCarSettings(); trainerReset();
+  }
+  const libLocalKey = (track, car) => "trained:" + track + ":" + car;  // the key v33-v39 used, so lines trained then still count
+  const libDocId = (track, car) => "trainer/" + track + "--" + car;
+  function ensureRooms() {
+    if (!trainer.rooms || trainer.track !== T.id) { trainer.rooms = trainerStations(); trainer.track = T.id; trainer.trackName = T.name; }
+    return trainer.rooms;
+  }
+  function retime(off, carKey, first, gen) {  // a stored line, timed with this car's settings now
+    const c = trainerCore(); c.init({ S: trainer.rooms, car: carSet[carKey], off, first, gen }); return c.report();
+  }
+  async function loadLib(id) {
+    const lib = {};
+    for (const car in CARS)
+      try { const s = JSON.parse(localStorage.getItem(libLocalKey(id, car)) || "null"); if (s && s.off) lib[car] = { settings: { ...CARS[car] }, ...s, car }; } catch (e) {}
+    if (db)
+      try {
+        const q = await db.collection("trainer").where("track", "==", id).limit(10).get();
+        for (const d of q.docs) {
+          const v = d.data(), have = lib[v.car];
+          if (!CARS[v.car] || !v.off) continue;
+          // the store's copy, unless this browser holds a faster one made with the same settings
+          if (!have || setKey(have.settings) !== setKey(v.settings || CARS[v.car]) || v.best <= have.best) lib[v.car] = { settings: { ...CARS[v.car] }, ...v, stored: true };
+        }
+      } catch (e) { note("trainer lines failed: " + (e && (e.code || e.message))); }
+    return lib;
+  }
+  function renderLib() {
+    const box = $("trLib"), cur = $("trCar").value; box.textContent = "";
+    for (const car in CARS) {
+      const e = trainer.lib[car], b = document.createElement("button");
+      b.className = (car === cur ? "here" : "") + (e ? "" : " none"); b.disabled = trainer.running;
+      const pos = document.createElement("span"); pos.className = "pos"; pos.textContent = car === cur ? "▸" : "";
+      const who = document.createElement("span"); who.textContent = CAR_NAMES[car][0].toUpperCase() + CAR_NAMES[car].slice(1);
+      const t = document.createElement("span"); t.className = "t"; t.textContent = e ? fmtLapS(e.best) : "–";
+      const sm = document.createElement("small");
+      sm.textContent = !e ? "no line yet" : (e.gen || 0).toLocaleString() + " generations · " +
+        (e.savedAt ? new Date(e.savedAt).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "trained earlier") + " · " +
+        (setKey(e.settings) === setKey(CARS[car]) ? "default settings" : setText(e.settings)) + (e.stored ? "" : " · this browser only");
+      b.append(pos, who, t, sm); b.title = "Show the " + CAR_NAMES[car] + "'s line";
+      b.onclick = () => { if (trainer.running) return; $("trCar").value = car; trainerReset(); };
+      box.appendChild(b);
+    }
+  }
+  function libKeep() {  // this run's best, kept when it beats the stored line
+    const r = trainer.rep;
+    if (!r || !trainer.rooms || !(r.best < trainer.bar - 1e-3)) return;
+    trainer.bar = r.best;
+    libSave({ track: trainer.track, name: trainer.trackName, car: trainer.carKey, rooms: trainer.rooms, rep: r, settings: { ...carSet[trainer.carKey] } });
+  }
+  async function libSave(s) {
+    // kept to the millimetre, and timed as kept (rounding moves the lap time a little: the stored time is the one a reload gets)
+    const off = s.rep.off.map((v) => Math.round(v * 1000) / 1000), c = trainerCore();
+    c.init({ S: s.rooms, car: s.settings, off });
+    const kept = c.report();
+    const entry = { track: s.track, name: s.name, car: s.car, best: +kept.best.toFixed(3), first: +s.rep.first.toFixed(3), gen: s.rep.gen,
+      top: Math.round(Math.max(...kept.speeds) * 3.6), m: s.rooms.m, off, settings: s.settings, savedAt: new Date().toISOString() };
+    const m = s.rooms.m;
+    try { localStorage.setItem(libLocalKey(s.track, s.car), JSON.stringify(entry)); } catch (e) {}
+    const here = () => trainer.libTrack === s.track;
+    if (here()) { trainer.lib[s.car] = { ...entry }; renderLib(); }
+    if (!db) return;
+    try {
+      // another device may have stored a faster line for this car meanwhile (same settings): that one stays
+      const d = await db.doc(libDocId(s.track, s.car)).get();
+      if (d.exists) {
+        const o = d.data();
+        if (o.m === m && setKey(o.settings || CARS[s.car]) === setKey(s.settings) && o.best < entry.best) {
+          if (here()) { trainer.lib[s.car] = { settings: { ...CARS[s.car] }, ...o, stored: true }; renderLib(); }
+          return;
+        }
+      }
+      await db.doc(libDocId(s.track, s.car)).set(entry);
+      if (here() && trainer.lib[s.car] && trainer.lib[s.car].savedAt === entry.savedAt) { trainer.lib[s.car].stored = true; renderLib(); }
+    } catch (e) { note("trainer line save failed: " + (e && (e.code || e.message))); }
+  }
+  function trainerStations() {
+    const seeds = [];
+    if (T.autopilot.length > 50) seeds.push(T.autopilot.map((q) => [q[0], q[1]]));
+    { const s = []; for (let k = 0, n = Math.max(60, Math.round(T.lap / 5)); k < n; k++) { const q = lapPoint(k * T.lap / n); if (q) s.push(q); } seeds.push(s); }
+    let best = null;
+    for (const seed of seeds) {  // the seed Create racing line would pick
+      const r = lineFrom(seed), score = r.on - 0.02 * r.back;
+      if (!best || score > best.score + 0.002 || (Math.abs(score - best.score) <= 0.002 && r.len < best.len)) best = { seed, score, len: r.len };
+    }
+    const R = trackRooms(best.seed), m = R.cen.length;
+    return { m, cx: R.cen.map((c) => c[0]), cz: R.cen.map((c) => c[1]), nx: Array.from(R.nx), nz: Array.from(R.nz), lo: Array.from(R.lo), hi: Array.from(R.hi) };
+  }
+  function trainerPath() {
+    const S = trainer.rooms, r = trainer.rep;
+    if (!S || !r) return null;
+    const out = [];
+    for (let i = 0; i < S.m; i++) out.push([S.cx[i] + S.nx[i] * r.off[i], S.cz[i] + S.nz[i] * r.off[i], r.speeds[i]]);
+    return out;
+  }
+  function fmtLapS(s) { const m = Math.floor(s / 60); return m + "'" + (s - m * 60).toFixed(3).padStart(6, "0"); }
+  function trainerShow() {
+    const r = trainer.rep, k = $("trCar").value, noTrack = !T || T.progress.length < 4;
+    $("trBest").textContent = r ? fmtLapS(r.best) : "–";
+    $("trGen").textContent = r ? r.gen.toLocaleString() : "0";
+    $("trTop").textContent = r ? Math.round(Math.max(...r.speeds) * 3.6) + " km/h" : "–";
+    $("trGain").textContent = r ? "−" + (r.first - r.best).toFixed(2) + " s" : "–";
+    $("trStart").disabled = trainer.running || noTrack;
+    $("trFresh").disabled = trainer.running || noTrack;
+    $("trStop").disabled = !trainer.running;
+    $("trUse").disabled = !r;
+    $("trCar").disabled = trainer.running;
+    for (const id of ["trMu", "trPw", "trVmax", "trBrake"]) $(id).disabled = trainer.running;
+    $("trSetDefault").disabled = trainer.running || setKey(carSet[k]) === setKey(CARS[k]);
+    $("trLive").hidden = !trainer.running;
+    const h = trainer.history, svg = $("trChart");
+    svg.textContent = "";
+    if (h.length > 1) {
+      const lo = Math.min(...h.map((p) => p[1])), hi = Math.max(...h.map((p) => p[1])), g0 = h[0][0], g1 = h[h.length - 1][0] || 1;
+      const pl = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      pl.setAttribute("points", h.map((p) => (300 * (p[0] - g0) / Math.max(1, g1 - g0)).toFixed(1) + "," + (6 + 34 * (p[1] - lo) / Math.max(1e-6, hi - lo)).toFixed(1)).join(" "));
+      svg.appendChild(pl);
+    }
+    dirty = true;
+  }
+  function trainerProgress(r) {
+    trainer.rep = r;
+    const h = trainer.history;
+    if (!h.length || h[h.length - 1][1] !== r.best) h.push([r.gen, r.best]);
+    if (h.length > 400) h.splice(1, 1);
+    // a faster line than the stored one is kept as it comes (at most every 15 s), and when the run ends
+    if (trainer.running && r.best < trainer.bar - 1e-3 && performance.now() - trainer.savedAt > 15000) { trainer.savedAt = performance.now(); libKeep(); }
+    trainerShow();
+  }
+  function trainerFinish(text) {
+    trainer.running = false;
+    if (trainer.worker) { trainer.worker.terminate(); trainer.worker = null; }
+    clearTimeout(trainer.timer);
+    libKeep();
+    $("trStatus").textContent = text;
+    trainerShow(); renderLib();
+  }
+  function trainerStart(fresh) {
+    if (!T || trainer.running) return;
+    const carKey = $("trCar").value, car = { ...carSet[carKey] };
+    $("trStatus").textContent = "Setting up the track…";
+    ensureRooms();
+    // go on from this car's line; with none yet, from the fastest other car's line; fresh: from the default line
+    const msg = { S: trainer.rooms, car, off: null, first: 0, gen: 0 };
+    let from = "the default line";
+    if (!fresh && trainer.rep && trainer.carKey === carKey) { msg.off = trainer.rep.off; msg.first = trainer.rep.first; msg.gen = trainer.rep.gen; from = null; }
+    else if (!fresh) {
+      let best = null;
+      for (const k in trainer.lib) {
+        const e = trainer.lib[k];
+        if (k === carKey || !e || e.m !== trainer.rooms.m) continue;
+        const r = retime(e.off, carKey);
+        if (!best || r.best < best.r.best) best = { k, r };
+      }
+      if (best) { msg.off = best.r.off; from = "the " + CAR_NAMES[best.k] + "'s line"; }
+    }
+    if (from) trainer.history = [];
+    trainer.carKey = carKey; trainer.running = true; trainer.savedAt = 0;
+    const done = (still) => {
+      if (!still) trainerFinish("Settled: no faster line found in the last ~14,000 tries. Its best is stored for the " + CAR_NAMES[carKey] + ". Use trained line, then Save to " + (GT4_HOST ? "keep it." : "send it to GT3."));
+    };
+    try {
+      const src = "const core = (" + trainerCore.toString() + ")();\n" +
+        "onmessage = (e) => { if (e.data.type === 'init') { core.init(e.data); postMessage(core.report()); loop(); } };\n" +
+        "function loop() { const still = core.run(120); const r = core.report(); r.still = still; postMessage(r); if (still) setTimeout(loop, 0); }";
+      trainer.worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+      trainer.worker.onmessage = (e) => { if (!trainer.running) return; trainerProgress(e.data); if (e.data.still === false) done(false); };
+      trainer.worker.onerror = () => { trainer.worker = null; trainerOnPage(msg, done); };
+      trainer.worker.postMessage({ type: "init", ...msg });
+    } catch (e) {
+      trainer.worker = null; trainerOnPage(msg, done);
+    }
+    $("trStatus").textContent = "Training the " + CAR_NAMES[carKey] + (from ? " from " + from : "") + "… It keeps going until it settles or you press Stop." +
+      (fresh && trainer.bar < Infinity ? " The stored line stays until this run beats it." : "");
+    trainerShow(); renderLib();
+  }
+  function trainerOnPage(msg, done) {  // no workers here: short slices between frames
+    trainer.core = trainerCore(); trainer.core.init(msg); trainerProgress(trainer.core.report());
+    const tick = () => {
+      if (!trainer.running) return;
+      const still = trainer.core.run(25); trainerProgress(trainer.core.report());
+      if (!still) done(false); else trainer.timer = setTimeout(tick, 15);
+    };
+    tick();
+  }
+  function trainerUse() {
+    const p = trainerPath();
+    if (!p) return;
+    const path = p.map((q) => [q[0], q[1]]), m = path.length, half = m >> 1;
+    const A = simplify(path.slice(0, half + 1), 0.35), B = simplify(path.slice(half).concat([path[0]]), 0.35);
+    const pts = A.slice(0, -1).concat(B.slice(0, -1));
+    setPoints(pts.map((q) => [Math.round(q[0] * 100) / 100, Math.round(q[1] * 100) / 100]));
+    status("The AI trainer's line (" + pts.length + " points, trainer's lap " + fmtLapS(trainer.rep.best) + "). Move points to change it, then Save to " + (GT4_HOST ? "keep it." : "send it to GT3."));
+  }
+  async function trainerReset() {  // another track, car or settings: that car's fastest stored line, timed with its settings now
+    if (trainer.running) trainerFinish("Stopped: another track was picked.");
+    const token = ++trainer.reset, carKey = $("trCar").value;
+    trainer.rep = null; trainer.history = []; trainer.carKey = carKey; trainer.bar = Infinity;
+    if (trainer.track !== (T && T.id)) { trainer.rooms = null; trainer.track = null; }
+    showCarSet();
+    $("trStatus").textContent = "Learns a fast line for the car above, on this device: no internet needed once the page is open.";
+    trainerShow();
+    if (!T || T.progress.length < 4) { trainer.lib = {}; trainer.libTrack = null; renderLib(); return; }
+    if (trainer.libTrack !== T.id) {
+      const id = T.id;
+      trainer.lib = {}; trainer.libTrack = id; renderLib();
+      const lib = await loadLib(id);
+      if (token !== trainer.reset || !T || T.id !== id) return;
+      trainer.lib = lib;
+    }
+    renderLib();
+    const e = trainer.lib[carKey];
+    try {
+      if (e) {
+        ensureRooms();
+        if (e.m === trainer.rooms.m) {
+          const same = setKey(e.settings) === setKey(carSet[carKey]);
+          trainer.rep = retime(e.off, carKey, same ? e.first : 0, e.gen || 0);
+          trainer.bar = trainer.rep.best;
+          trainer.history = [[0, trainer.rep.first], [trainer.rep.gen, trainer.rep.best]];
+          $("trStatus").textContent = "The " + CAR_NAMES[carKey] + "'s fastest line on this track" +
+            (same ? "" : ", trained with other settings (" + setText(e.settings) + ") and timed with these") + ". Train goes on from it.";
+        } else $("trStatus").textContent = "This track's data changed since the " + CAR_NAMES[carKey] + "'s line was trained: Train starts again.";
+      } else {
+        const other = Object.keys(trainer.lib).some((k) => k !== carKey && trainer.lib[k]);
+        $("trStatus").textContent = "No line for the " + CAR_NAMES[carKey] + " on this track yet. Train starts from " +
+          (other ? "the fastest other car's line" : "the default line (the smoothest path on the tarmac)") + ".";
+      }
+    } catch (x) { note("trainer reset failed: " + (x && x.message)); }
+    trainerShow();
+  }
+  function drawTrainer() {
+    if (!layers.train) return;
+    const p = trainerPath();
+    if (!p) return;
+    let lo = Infinity, hi = 0;
+    for (const q of p) { lo = Math.min(lo, q[2]); hi = Math.max(hi, q[2]); }
+    ctx.lineWidth = 3; ctx.lineCap = "round";
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i], b = p[(i + 1) % p.length];
+      const [ax, ay] = worldToScreen(a[0], a[1]), [bx, by] = worldToScreen(b[0], b[1]);
+      ctx.beginPath(); ctx.strokeStyle = speedColor(a[2], lo, hi); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    }
+  }
+  $("trStart").onclick = () => trainerStart(false);
+  $("trFresh").onclick = () => trainerStart(true);
+  $("trStop").onclick = () => trainerFinish("Stopped. Its best is stored for the " + CAR_NAMES[trainer.carKey] + "; Train goes on from here, Use trained line puts it in Your line.");
+  $("trUse").onclick = trainerUse;
+  $("trCar").onchange = () => { if (T) trainerReset(); else showCarSet(); };
+  for (const id of ["trMu", "trPw", "trVmax", "trBrake"]) $(id).onchange = readCarSet;
+  $("trSetDefault").onclick = () => { const k = $("trCar").value; carSet[k] = { ...CARS[k] }; saveCarSettings(); trainerReset(); };
+  showCarSet();
+  for (const [id, key] of [["lyWalls", "walls"], ["lyAuto", "auto"], ["lyGt4", "gt4"], ["lyNames", "names"], ["lyMine", "mine"], ["lyLap", "lap"], ["lyRace", "race"], ["lyTrain", "train"]])
+    $(id).onchange = (e) => { layers[key] = e.target.checked; baseDirty = true; dirty = true; };
+
+  // ---------------------------------------------------------------- panel tabs, map pop-ups, tip
+  const TABS = ["line", "train", "laps", "ai", "races"];
+  function showTab(name) {
+    for (const k of TABS) {
+      const on = k === name;
+      $("tab-" + k).setAttribute("aria-selected", on); $("tab-" + k).tabIndex = on ? 0 : -1;
+      $("pane-" + k).hidden = !on;
+    }
+    try { localStorage.setItem("tab", name); } catch (e) {}
+  }
+  for (const k of TABS) $("tab-" + k).onclick = () => showTab(k);
+  $("tabs").addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const i = TABS.findIndex((k) => $("tab-" + k).getAttribute("aria-selected") === "true");
+    const k = TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    showTab(k); $("tab-" + k).focus(); e.preventDefault();
+  });
+  { let t = null; try { t = localStorage.getItem("tab"); } catch (e) {} showTab(TABS.includes(t) ? t : "line"); }
+  const POPS = [["layersBtn", "layersPop"], ["helpBtn", "helpPop"]];
+  function togglePop(pop) {  // opens that one (or closes it if open), closes the other; null closes both
+    for (const [b, p] of POPS) { const on = p === pop && $(p).hidden; $(p).hidden = !on; $(b).setAttribute("aria-expanded", on); }
+  }
+  for (const [b, p] of POPS) $(b).onclick = () => togglePop(p);
+  // a click outside closes it; a click on the map that closes it doesn't also place a point
+  document.addEventListener("pointerdown", (e) => {
+    const open = POPS.find(([, p]) => !$(p).hidden);
+    if (!open || $(open[1]).contains(e.target) || $(open[0]).contains(e.target)) return;
+    togglePop(null);
+    if (e.target === canvas) e.stopPropagation();
+  }, true);
+  try { $("hint").hidden = localStorage.getItem("hintOff") === "1"; } catch (e) {}
+  $("hintClose").onclick = () => { $("hint").hidden = true; try { localStorage.setItem("hintOff", "1"); } catch (e) {} };
+  renderDrivers();
+  // one switch per surface; the ones this track doesn't have are dimmed
+  for (const g of SURFACES) {
+    const l = document.createElement("label"); l.id = "sf-" + g.key;
+    const box = document.createElement("input"); box.type = "checkbox"; box.id = "ly-" + g.key; box.checked = surfOn[g.key];
+    box.onchange = () => {
+      surfOn[g.key] = box.checked; baseDirty = true; dirty = true;
+      try { localStorage.setItem("surfaces", JSON.stringify(surfOn)); } catch (e) {}
+    };
+    const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = COLORS[g.codes[0]];
+    const name = document.createElement("span"); name.textContent = g.name;
+    const tag = document.createElement("small");
+    if (g.note) l.title = g.note;
+    l.append(box, sw, name, tag);
+    $("surfaces").appendChild(l);
+  }
+  function showSurfaces() {
+    const gt4 = T && T.group === "GT4";
+    for (const g of SURFACES) {
+      const here = T && g.codes.some((c) => T.surf[c]);
+      $("sf-" + g.key).hidden = !!g.gt4 && !gt4;  // GT4's own surfaces: on the GT4 tab only
+      $("sf-" + g.key).classList.toggle("absent", !here);
+      $("sf-" + g.key).querySelector("small").textContent = here ? "" : "not on this track";
+    }
+    $("concreteNote").textContent = gt4
+      ? "Concrete and painted lines are GT4's own surfaces. GT3 has neither: on the converted tracks they drive as tarmac. How GT4 grips on concrete compared with tarmac isn't measured."
+      : "Concrete: GT3 has no concrete surface. GT4's (the Nordschleife's Karussell) became tarmac in the converted track, so it drives with tarmac grip. GT4 tracks show it under the GT4 tab.";
+  }
+
+  // ---------------------------------------------------------------- drafts, saving, results
+  function saveDraft() { try { localStorage.setItem("draft:" + T.id, JSON.stringify(points)); } catch (e) {} }
+  function readDraft(id) { try { return JSON.parse(localStorage.getItem("draft:" + id) || "null"); } catch (e) { return null; } }
+  function status(text, err) { $("status").textContent = text; $("status").className = "status" + (err ? " err" : ""); }
+  async function save() {
+    if (points.length < 3) { status("Place at least 3 points first.", true); return; }
+    if (!db) { status("Saving needs this page opened on claude.ai while signed in. Your line is kept in this browser.", true); return; }
+    $("save").disabled = true; status("Saving…");
+    try {
+      const body = { track: T.id, name: T.name, lap: T.lap, points: points.map((p) => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100]),
+        savedAt: new Date().toISOString(), onTarmac: $("stRoad").textContent };
+      await db.doc("lines/" + T.id).set(body);
+      savedAt = body.savedAt;
+      status("Saved " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ". Tell Claude: “I saved " + T.name + "”.");
+    } catch (e) {
+      status(e && e.code === "invalid_argument" ? "This page is view-only for you, so the line can't be saved." : "Couldn't save (" + (e && e.code || "error") + "). Try again in a moment.", true);
+    } finally { $("save").disabled = false; }
+  }
+  $("save").onclick = save;
+  function watchResult(id) {
+    if (resultUnsub) { resultUnsub(); resultUnsub = null; }
+    $("result").textContent = "No drive with your line yet.";
+    if (!db) return;
+    resultUnsub = db.doc("results/" + id).onSnapshot((snap) => {
+      const d = snap.exists ? snap.data() : null;
+      $("result").textContent = d && d.text ? d.text : "No drive with your line yet.";
+    }, () => {});
+  }
+
+  // the saved line comes from the shared store: it never holds up drawing the track
+  async function applySaved(id) {
+    if (!db) return;
+    let s = null;
+    try { s = await db.doc("lines/" + id).get(); } catch (e) { return; }
+    if (!s || !s.exists || !T || T.id !== id || readDraft(id)) return;
+    points = s.data().points.map((p) => p.slice()); savedAt = s.data().savedAt; undoStack = []; selected = -1;
+    rebuildSpline(); status("Your saved line (" + new Date(savedAt).toLocaleString() + ").");
+  }
+  let wanted = null;
+  async function selectTrack(id) {
+    wanted = id;
+    const entry = index.find((t) => t.id === id);
+    let t;
+    try { t = await loadTrack(id); }
+    catch (e) {
+      if (wanted === id) { $("trackname").textContent = entry ? entry.name : id; status("Couldn't load this track (" + (e && e.message || "error") + "). Pick it again, or reload the page.", true); }
+      return;
+    }
+    if (wanted !== id) return;  // another track was picked while this one loaded
+    T = t; baseDirty = true; dirty = true;
+    showSurfaces(); showNames(); trainerReset();
+    $("trackname").textContent = T.name;
+    const where = GT4_HOST
+      ? (T.group === "GT4" ? "GT4 course · drive it in GT4" : T.group === "GT3" ? "GT3 course (not in GT4)" : "Converted for GT3 (GT4 drives its own courses: GT4 tab)")
+      : T.group === "In GT3 (converted)" ? "Drivable in GT3" : T.group === "GT3" ? "GT3 course" : "GT4 course (draw now, drive once converted)";
+    $("trackmeta").textContent = where + " · lap " + (T.lap / 1000).toFixed(3) + " km · " + T.gt4.length + " AI points";
+    $("fromAuto").disabled = !T.autopilot.length;
+    $("fromGt4").disabled = !T.gt4.length;
+    undoStack = []; selected = -1;
+    let start = readDraft(id), how = "Your unsaved draft in this browser.";
+    if (!start || !start.length) {
+      start = T.gt4.map((p) => p.slice());
+      how = T.gt4.length ? "Starting from the game's AI line points. Move them or add your own." : "No AI line for this track: tap to place your first points.";
+    }
+    points = start.map((p) => p.slice());
+    let turn = 0;
+    try { turn = +(localStorage.getItem("rot:" + id) || 0) || 0; } catch (e) {}
+    setTurn(turn);
+    resize(); rebuildSpline(); fit(); status(how);
+    const r = stage.getBoundingClientRect();
+    note("shown " + id + ": map " + Math.round(r.width) + "x" + Math.round(r.height) + " px, canvas " + canvas.width + "x" + canvas.height + ", scale " + view.s.toFixed(3) + " px/m, " + points.length + " points");
+    $("trackmeta").textContent += " · editor v" + VERSION;
+    applySaved(id); watchResult(id); loadDrives(id); sendDiag();
+    try { localStorage.setItem("lastTrack", id); } catch (e) {}
+  }
+  let diagTimer = 0;
+  function sendDiag() {
+    clearTimeout(diagTimer);
+    diagTimer = setTimeout(() => {
+      if (!db) return;
+      const r = stage.getBoundingClientRect();
+      diag.frameNow = innerWidth + "x" + innerHeight; diag.map = Math.round(r.width) + "x" + Math.round(r.height); diag.track = T ? T.id : null;
+      try { db.doc("diag/" + diagId).set(JSON.parse(JSON.stringify(diag))).catch((e) => note("diag save failed: " + (e && (e.code || e.message)))); } catch (e) {}
+    }, 800);
+  }
+  $("track").onchange = (e) => selectTrack(e.target.value);
+  // the game switch fills the track list with that group's tracks
+  function showGroup(group, keepId) {
+    for (const b of $("games").querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.group === group);
+    const sel = $("track"); sel.textContent = "";
+    for (const t of index.filter((t) => t.group === group)) {
+      const o = document.createElement("option"); o.value = t.id; o.textContent = t.name; sel.appendChild(o);
+    }
+    sel.value = keepId && index.some((t) => t.id === keepId && t.group === group) ? keepId : sel.options[0].value;
+    return sel.value;
+  }
+  for (const b of $("games").querySelectorAll("button"))
+    b.onclick = () => { const id = showGroup(b.dataset.group); selectTrack(id); };
+
+  async function boot() {
+    resize(); window.addEventListener("resize", () => { resize(); });
+    // the map area can change size without the window doing so (the page opening in a panel, the header wrapping)
+    if (window.ResizeObserver) new ResizeObserver(() => { resize(); }).observe(stage);
+    requestAnimationFrame(frame);
+    // the shared store lights up when available (it can take a moment, or never); the track draws first
+    const dbReady = (async () => {
+      try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; note("db failed: " + (e && e.message)); }
+      note("db " + (db ? "ready" : "not available"));
+      sendDiag();
+    })();
+    try {
+      const r = await fetch("tracks/index.json");
+      note("index HTTP " + r.status + " " + (r.headers.get("content-type") || "") + " url " + r.url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      index = await r.json();
+      // GT4's own courses only (developer 2026-10-20: "remove GT3 and converted tracks from the launcher for now"): served by
+      // gt4RaceLab.exe the GT3 and converted tracks are hidden, not deleted; GT4_RACELAB_TRACKS=all (or --all-tracks) shows them.
+      if (GT4_ONLY) index = index.filter((t) => t.group === "GT4");
+      note("index " + index.length + " tracks");
+      // corner names: small, loaded with the list (none is fine)
+      fetch("tracks/runways.json").then((r) => (r.ok ? r.json() : {})).then((j) => { RUNWAYS = j || {}; }).catch(() => {});
+      fetch("tracks/names.json").then((r) => (r.ok ? r.json() : {})).then((j) => { NAMES = j || {}; if (T) showNames(); dirty = true; })
+        .catch((e) => note("names failed: " + (e && e.message)));
+    } catch (e) {
+      note("index failed: " + (e && e.message));
+      $("trackname").textContent = "Track list didn't load";
+      status("The track list didn't load (" + (e && e.message || "error") + "). Reload the page.", true);
+      return;
+    }
+    if (GT4_HOST) { const g = $("games"), b4 = g.querySelector('[data-group="GT4"]'); if (b4) g.insertBefore(b4, g.firstChild); }
+    if (GT4_ONLY) {  // one group left: no Converted / GT3 buttons, and the title says GT4
+      for (const b of $("games").querySelectorAll("button")) if (b.dataset.group !== "GT4") b.hidden = true;
+      $("games").hidden = true;
+      const sm = document.querySelector(".brand small"); if (sm) sm.textContent = "GT4 tracks";
+    }
+    let first = (GT4_HOST && index.find((t) => t.group === "GT4") || index[0]).id;
+    try { const l = localStorage.getItem("lastTrack"); if (l && index.some((t) => t.id === l)) first = l; } catch (e) {}
+    showGroup(index.find((t) => t.id === first).group, first);
+    await selectTrack(first);
+    if (GT4_HOST) {
+      $("lastDriveH").textContent = "Last drive in GT4"; $("lapsFromH").textContent = "Add laps from GT4";
+      $("trUse").title = "Put the trained line into Your line (then Save keeps it)";
+      $("save").title = "Saves your line for this track";
+    }
+    const dbAtShow = db;  // the store was already there when the track was shown: its line and laps are on the way
+    await dbReady;
+    if (db && T && !dbAtShow) {
+      // a saved line replaces the GT4 starting points (an unsaved draft in this browser stays)
+      applySaved(T.id); watchResult(T.id); loadDrives(T.id);
+    }
+    if (db) {  // the trainer's car settings and stored lines, and the drivers, from the shared store
+      if (!dbAtShow) trainer.libTrack = null;
+      loadCarSettings().then(() => { if (T && !trainer.running && trainer.libTrack !== T.id) trainerReset(); });
+      loadDrivers();
+    }
+  }
+  boot();
+})();
+</script>

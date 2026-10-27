@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GT4 Telemetry</title>
+<!--
+  Served by GT4.exe's pages service (and by dev/replay_feed.py for testing).
+  Layout from the address: #timing-map (default), #timing, #map, #dash, #phone, #custom, #mirror (GT4's rear-view mirror
+  full screen, /mirror.mjpg; ?still=1 polls mirror.jpg).
+  #custom draws the launcher's Telemetry screen layout from /layout (telemetry-layout.json, hand-off 8); it is the default
+  when /layout exists or ?screen= is given. ?screen=monitor|up|side picks the layout (phones follow their orientation);
+  ?layout=<file> loads a layout file instead of /layout for testing.
+  #phone builds panels (mirror, position, timing, map, radar, dash) from /config (FEED.md); it is the default
+  when /config has phone_panels. ?panels=mirror:L,timing:M&arrange=auto|one|two override it for testing.
+  Live data: Server-Sent Events from /feed, one JSON state per message (see FEED.md).
+  Optional course art: tracks/<course id>.json; without it the map draws the outline the cars drive.
+  No external files, so it works offline on the PC, in WebView2 and on a phone.
+-->
+<style>
+:root{--bg:#07090c;--panel:#10141a;--line:#232a33;--fg:#eef1f5;--mute:#8d97a6;--me:#f2b33d;--purple:#b67cf0;--good:#3ecf8e;--bad:#e5484d;
+  --num:"Bahnschrift","DIN Alternate","Segoe UI",system-ui,sans-serif;--ui:"Segoe UI",system-ui,sans-serif;color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--ui);overflow:hidden}
+#app{height:100%;display:grid;grid-template-columns:minmax(0,38fr) minmax(0,62fr);grid-template-rows:minmax(0,1fr) auto;gap:1.2vmin;
+  padding:max(1.6vmin,env(safe-area-inset-top)) max(1.6vmin,env(safe-area-inset-right)) max(1.6vmin,env(safe-area-inset-bottom)) max(1.6vmin,env(safe-area-inset-left))}
+body.timing #app{grid-template-columns:1fr}
+body.timing #mapbox{display:none}
+body.map #app{grid-template-columns:1fr}
+body.map #tower{display:none}
+@media (orientation:portrait){body.timing-map #app{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr) auto}}
+body.dash #tower,body.dash #mapbox,body.dash #strip{display:none}
+body:not(.dash) #dash{display:none}
+body.dash #app{grid-template-columns:1fr;grid-template-rows:1fr}
+#dash{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) minmax(0,1fr);gap:2vmin;align-items:center;min-height:0;height:100%}
+@media (orientation:portrait){#dash{grid-template-columns:1fr 1fr;grid-template-rows:auto auto auto}#d-mid{grid-column:1/-1;order:-1}}
+.dcell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.2vmin;min-width:0;min-height:0}
+.dlbl{font:600 1.6vmin var(--ui);letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+#d-speed{font:700 13vmin/1 var(--num);font-variant-numeric:tabular-nums}
+#d-unit{font:500 2.2vmin var(--ui);color:var(--mute)}
+#d-gear{font:700 16vmin/1 var(--num);color:var(--me)}
+#d-rpm{width:100%;height:2.4vmin;background:rgba(255,255,255,.08);border-radius:1vmin;overflow:hidden}
+#d-rpm i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--good),var(--me) 75%,var(--bad))}
+#d-rpmtxt{font:500 2vmin var(--num);color:var(--mute)}
+#d-radar,#d-g{width:min(100%,46vmin);aspect-ratio:1;max-width:100%}
+#d-g{width:min(100%,30vmin)}
+.dpedals{display:flex;gap:1.4vmin;height:20vmin;align-items:stretch}
+.dpedals div{width:3.4vmin;background:rgba(255,255,255,.08);border-radius:.5vmin;position:relative;overflow:hidden}
+.dpedals i{position:absolute;left:0;right:0;bottom:0}
+.drow{display:flex;gap:3vmin;align-items:flex-end;font-family:var(--num);font-variant-numeric:tabular-nums}
+.drow b{display:block;font:600 1.4vmin var(--ui);letter-spacing:.14em;color:var(--mute);text-transform:uppercase}
+.drow span{font-size:4.4vmin}
+#tower{min-width:0;overflow:hidden}
+#tower h2{margin:0 0 .8vmin;font:600 1.5vmin/1.2 var(--ui);letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+table{width:100%;border-collapse:collapse;font-family:var(--num);font-variant-numeric:tabular-nums;font-size:clamp(13px,2.3vmin,30px)}
+th{font:500 1.35vmin var(--ui);letter-spacing:.1em;color:var(--mute);text-align:right;padding:.4vmin .6vmin;border-bottom:1px solid var(--line)}
+td{padding:.55vmin .6vmin;text-align:right;white-space:nowrap}
+th:nth-child(2),td:nth-child(2){text-align:left}
+tr+tr td{border-top:1px solid rgba(255,255,255,.05)}
+td.car{overflow:hidden;text-overflow:ellipsis;max-width:0;width:40%}
+.p{display:inline-grid;place-items:center;width:1.8em;height:1.8em;border-radius:50%;font-weight:700;color:#07090c}
+tr.me td{background:rgba(242,179,61,.13)}
+.fast{color:var(--purple)}
+.dim{color:var(--mute)}
+#mapbox{position:relative;min-width:0;min-height:0}
+#map{position:absolute;inset:0;width:100%;height:100%}
+#strip{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:.6vmin 3.2vmin;border-top:1px solid var(--line);padding-top:1vmin;font-family:var(--num);font-variant-numeric:tabular-nums;font-size:clamp(14px,2.8vmin,36px)}
+@media (max-width:560px){th:nth-child(4),td:nth-child(4),th:nth-child(5),td:nth-child(5){display:none}}
+#strip b{font:500 .5em var(--ui);letter-spacing:.12em;color:var(--mute);margin-right:.6em;vertical-align:.25em}
+#wait{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);text-align:center}
+#wait div{font:600 clamp(18px,3.4vmin,40px) var(--ui);letter-spacing:.04em}
+#wait p{color:var(--mute);font-size:clamp(13px,1.8vmin,22px);margin:.6em 0 0}
+#phone{height:100%;display:grid;gap:1.2vmin;
+  padding:max(1.6vmin,env(safe-area-inset-top)) max(1.6vmin,env(safe-area-inset-right)) max(1.6vmin,env(safe-area-inset-bottom)) max(1.6vmin,env(safe-area-inset-left))}
+.pcol{display:grid;gap:1.2vmin;min-height:0;min-width:0}
+.pnl{background:var(--panel);border:1px solid var(--line);border-radius:1vmin;min-height:0;min-width:0;overflow:hidden;display:flex;flex-direction:column;padding:1vmin 1.2vmin}
+.pnl>h3{margin:0 0 .6vmin;font:600 clamp(10px,1.5vmin,16px) var(--ui);letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+.pbody{flex:1;min-height:0;position:relative}
+#phone #mapbox{position:absolute;inset:0}
+#phone #tower{height:100%;overflow:hidden}
+#phone #tower h2{display:none}
+#phone #d-mid{height:100%}
+#phone #d-mid .dlbl{display:none}
+#phone #d-radar{width:auto;height:100%;max-width:100%;max-height:100%;aspect-ratio:1}
+#phone .dashrow{display:flex;gap:3vmin;align-items:center;justify-content:space-around;height:100%}
+#phone #d-speed{font-size:9vmin}#phone #d-gear{font-size:10vmin}
+#mirrorimg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;border-radius:.6vmin}
+#mirrorcard{position:absolute;inset:0;display:grid;place-items:center;color:var(--mute);font-size:clamp(12px,1.8vmin,20px);text-align:center;padding:1em}
+#ppos{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1vmin 4vmin;height:100%;align-content:center;font-family:var(--num);font-variant-numeric:tabular-nums}
+#ppos b{display:block;font:600 clamp(10px,1.3vmin,14px) var(--ui);letter-spacing:.14em;color:var(--mute);text-transform:uppercase}
+#ppos span{font-size:clamp(18px,4vmin,48px)}
+#ppos .big{font:700 clamp(36px,9vmin,110px)/1 var(--num);color:var(--me)}
+#custom{position:fixed;inset:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);background:#121920}
+#custom.black{background:#000}
+.cbox{position:absolute;background:var(--panel);border:1px solid var(--line);border-radius:.8vmin;overflow:hidden}
+.cbox.bare{background:#07090c}.cbox.clear{background:none;border:0}
+.cbox canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+body:not(.mirror) #mirror{display:none}
+body.mirror #tower,body.mirror #mapbox,body.mirror #strip,body.mirror #dash{display:none}
+body.mirror #app{grid-template-columns:1fr;grid-template-rows:1fr;padding:0}
+#mirror{position:relative;min-width:0;min-height:0;background:#000}
+#m-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#m-card{position:absolute;inset:0;display:grid;place-items:center;text-align:center;background:var(--bg)}
+#m-card div{font:600 clamp(18px,3.4vmin,40px) var(--ui);letter-spacing:.04em}
+#m-card p{color:var(--mute);font-size:clamp(13px,1.8vmin,22px);margin:.6em 0 0}
+#paused{position:fixed;top:2vmin;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);padding:.4em 1em;font:600 2vmin var(--ui);letter-spacing:.14em}
+</style>
+</head>
+<body class="timing-map">
+<div id="app">
+  <section id="tower"><h2 id="title">Live timing</h2>
+    <table><thead><tr><th>P</th><th>Car</th><th>Gap</th><th>Int</th><th>Last</th><th>Best</th></tr></thead><tbody id="tb"></tbody></table>
+  </section>
+  <section id="mapbox"><canvas id="map"></canvas></section>
+  <section id="dash">
+    <div class="dcell" id="d-left">
+      <div class="dlbl">Speed</div><div id="d-speed">0</div><div id="d-unit">km/h</div>
+      <div id="d-rpm"><i id="d-rpmbar"></i></div><div id="d-rpmtxt">0 rpm</div>
+      <div class="drow"><div><b>Pos</b><span id="d-pos">-</span></div><div><b>Lap</b><span id="d-lap">-</span></div><div><b>Delta</b><span id="d-delta">-</span></div></div>
+    </div>
+    <div class="dcell" id="d-mid"><div class="dlbl">Radar 30 m</div><canvas id="d-radar" width="600" height="600"></canvas></div>
+    <div class="dcell" id="d-right">
+      <div class="dlbl">Gear</div><div id="d-gear">-</div>
+      <div style="display:flex;gap:3vmin;align-items:center">
+        <div class="dpedals" title="Brake, throttle"><div><i id="d-brk" style="background:var(--bad)"></i></div><div><i id="d-thr" style="background:var(--good)"></i></div></div>
+        <canvas id="d-g" width="300" height="300"></canvas>
+      </div>
+    </div>
+  </section>
+  <section id="mirror"><img id="m-img" alt=""><div id="m-card" hidden><div><div>Rear-view mirror</div><p>GT4 sends its mirror during races</p></div></div></section>
+  <div id="strip">
+    <span><b>LAP</b><span id="s-lap">-</span></span>
+    <span><b>RACE</b><span id="s-clock">-</span></span>
+    <span><b>DELTA</b><span id="s-delta">-</span></span>
+    <span><b>SPEED</b><span id="s-speed">-</span></span>
+    <span><b>GEAR</b><span id="s-gear">-</span></span>
+  </div>
+</div>
+<div id="phone" hidden></div>
+<div id="custom" hidden></div>
+<div id="paused" hidden>PAUSED</div>
+<div id="wait"><div><div>Waiting for a race</div><p id="wait-sub">GT4 telemetry</p></div></div>
+<script>
+'use strict';
+const COLORS=['#4f8bd6','#d65a4f','#58c4dc','#9bd65a','#c98bd6','#e08bb0','#7fd1b9','#d6a35a','#8f9cf0','#c7c7c7','#5ab0d6','#d6d65a','#b07fd6','#6fd68f','#d67f5a','#9bb0c7'];
+const ME='#f2b33d';
+const qs=new URLSearchParams(location.search);
+let UNITS=qs.get('units')==='mph'?'mph':'kmh'; // the feed's units (GT4's own Options) win when present
+/* settings the launcher writes, served at /config (FEED.md); these defaults when it's missing */
+const CFG={phone_panels:'mirror:L,timing:M,map:M',phone_arrange:'auto',phone_map:'detailed',phone_map_view:'locked',phone_names:'on',phone_radar_range:30,
+  radar_range:25,radar_zoom:'off',radar_labels:'on',radar_cars:90,radar_colours:'78dcff,ffe65a,ffe65a,ff8c00,000000'};
+let phoneDefault=false,LAYOUT=null;
+if(qs.get('panels'))CFG.phone_panels=qs.get('panels');if(qs.get('arrange'))CFG.phone_arrange=qs.get('arrange');if(qs.get('view'))CFG.phone_map_view=qs.get('view');
+function layout(){const def=LAYOUT||qs.get('screen')?'custom':phoneDefault?'phone':'timing-map';const h=(location.hash||'#'+def).slice(1);
+  const name=['timing','map','timing-map','dash','phone','custom','mirror'].includes(h)?h:def;document.body.className=name;
+  if(name!=='phone')unbuildPhone();if(name!=='custom')unbuildCustom();if(name==='phone')buildPhone();if(name==='custom')buildCustom();mirrorStream();resize();}
+// #mirror (hand-off 6): the mirror's pictures only while that layout shows: the MJPEG stream (opened once the page has loaded),
+// or with ?still=1 one picture after another from mirror.jpg (for browsers or tools that do not take a stream).
+let fsMirrorTimer=0;
+function mirrorStream(){
+  const im=document.getElementById('m-img'),want=document.body.classList.contains('mirror');
+  if(document.readyState!=='complete'){addEventListener('load',mirrorStream,{once:true});return;}
+  if(qs.get('still')==='1'){
+    if(want&&!fsMirrorTimer){const next=()=>{const p=new Image();p.onload=()=>{im.src=p.src;fsMirrorTimer=setTimeout(next,100);};
+        p.onerror=()=>{fsMirrorTimer=setTimeout(next,500);};p.src='mirror.jpg?t='+Date.now();};next();}
+    else if(!want&&fsMirrorTimer){clearTimeout(fsMirrorTimer);fsMirrorTimer=0;im.removeAttribute('src');}
+    return;}
+  // (21 Oct: the stream opened again a second after it breaks (Wi-Fi, GT4 restarted), not left blank until a reload)
+  im.onerror=()=>{if(document.body.classList.contains('mirror'))setTimeout(()=>{if(document.body.classList.contains('mirror'))im.src='mirror.mjpg?t='+Date.now();},1000);};
+  if(want&&!im.getAttribute('src'))im.src='mirror.mjpg';else if(!want&&im.getAttribute('src'))im.removeAttribute('src');
+}
+addEventListener('hashchange',layout);
+fetch('config').then(r=>r.ok?r.json():null).then(j=>{if(j){Object.assign(CFG,j);if(j.phone_panels)phoneDefault=true;
+  if(qs.get('panels'))CFG.phone_panels=qs.get('panels');if(qs.get('arrange'))CFG.phone_arrange=qs.get('arrange');layout();}}).catch(()=>{});
+// ?layoutjson=<the file's text>: the launcher's "Show it now" opens this page from disk, where fetch cannot read files
+if(qs.get('layoutjson')){try{const j=JSON.parse(qs.get('layoutjson'));if(j&&j.version)LAYOUT=j;}catch(_){}}
+else fetch(qs.get('layout')||'layout').then(r=>r.ok?r.json():null).then(j=>{if(j&&j.version){LAYOUT=j;layout();}}).catch(()=>{});
+
+/* ---------- time formatting ---------- */
+const NOTIME=v=>v==null||v<=0||v>=359999999;
+function lapTime(ms){if(NOTIME(ms))return'-\'--.---';const m=Math.floor(ms/60000),s=(ms%60000)/1000;return m+"'"+s.toFixed(3).padStart(6,'0');}
+function clock(ms){if(ms==null)return'-';const m=Math.floor(ms/60000),s=Math.floor(ms/1000)%60,t=Math.floor(ms%1000/100);return m+"'"+String(s).padStart(2,'0')+'.'+t;}
+function gapTxt(ms){if(ms==null)return'';if(ms>=60000)return'+'+lapTime(ms);return'+'+(ms/1000).toFixed(3);}
+
+/* ---------- race model built from the feed ---------- */
+let S=null,courseLen=null,maxDist=0,lastCourse=null,lastClock=null;
+const hist={};        // car -> [[lap, dist, clock]] for gap lookups
+let bestTrace=null,curTrace=[],lastPlayerLap=null;
+const myLaps=[]; // the player's finished lap times, for the lap times box
+const outline=new Map(); // fallback map: average x/y per 4 m of lap distance
+let track=null,trackFor=null;
+
+function reset(){for(const k in hist)delete hist[k];myLaps.length=0;maxDist=0;courseLen=null;bestTrace=null;curTrace=[];lastPlayerLap=null;outline.clear();}
+function L(){return courseLen||Math.max(maxDist,1);}
+function prog(lap,dist){return (Math.max(lap,1)-1)*L()+dist;}
+function timeAtProgress(car,p){ // when did this car reach progress p (ms on the race clock)
+  const h=hist[car];if(!h||!h.length)return null;
+  let lo=0,hi=h.length-1;const P=i=>prog(h[i][0],h[i][1]);
+  if(p<P(0)||p>P(hi))return null;
+  while(hi-lo>1){const m=(lo+hi)>>1;if(P(m)<=p)lo=m;else hi=m;}
+  const p0=P(lo),p1=P(hi);const u=p1>p0?(p-p0)/(p1-p0):0;return h[lo][2]+(h[hi][2]-h[lo][2])*u;
+}
+function ingest(s){
+  if(s.course!==lastCourse){reset();lastCourse=s.course;loadTrack(s.course);}
+  else if(lastClock!=null&&s.clock_ms+1000<lastClock){const keep=new Map(outline);reset();keep.forEach((v,k)=>outline.set(k,v));} // race restarted or replay began
+  lastClock=s.clock_ms;
+  if(s.course_len_m)courseLen=s.course_len_m;
+  for(const c of s.cars){
+    if(c.dist>maxDist&&!courseLen)maxDist=c.dist;
+    const h=hist[c.car]||(hist[c.car]=[]);const last=h[h.length-1];
+    if(c.lap>=1&&(!last||s.clock_ms>last[2])){
+      if(!last||prog(c.lap,c.dist)>=prog(last[0],last[1]))h.push([c.lap,c.dist,s.clock_ms]);
+      if(h.length>20000)h.splice(0,5000);
+    }
+    if(!track&&c.lap>=1){const b=Math.floor(c.dist/4),o=outline.get(b);
+      if(o){o[0]+=(c.x-o[0])*.05;o[1]+=(c.y-o[1])*.05;}else outline.set(b,[c.x,c.y]);}
+    if(c.player){
+      if(lastPlayerLap!=null&&c.lap!==lastPlayerLap){
+        if(curTrace.length>20&&!NOTIME(c.last_ms)&&(bestTrace==null||c.last_ms<=bestTrace.ms))bestTrace={ms:c.last_ms,pts:curTrace};
+        if(!NOTIME(c.last_ms))myLaps.push(c.last_ms);
+        curTrace=[];
+      }
+      lastPlayerLap=c.lap;
+      if(c.lap>=1&&(!curTrace.length||c.dist>curTrace[curTrace.length-1][0]))curTrace.push([c.dist,c.lap_ms]);
+    }
+  }
+}
+function deltaNow(c){
+  if(!bestTrace||!curTrace.length)return null;
+  const d=c.dist,a=bestTrace.pts;let lo=0,hi=a.length-1;if(d<a[0][0]||d>a[hi][0])return null;
+  while(hi-lo>1){const m=(lo+hi)>>1;if(a[m][0]<=d)lo=m;else hi=m;}
+  const u=a[hi][0]>a[lo][0]?(d-a[lo][0])/(a[hi][0]-a[lo][0]):0;return c.lap_ms-(a[lo][1]+(a[hi][1]-a[lo][1])*u);
+}
+
+/* ---------- optional course art ---------- */
+function loadTrack(id){track=null;trackFor=id;
+  fetch('tracks/'+id+'.json').then(r=>r.ok?r.json():null).then(t=>{if(!t||trackFor!==id)return;
+    if(t.img){const im=new Image();im.onload=()=>{t.image=im;};im.src=t.img;}track=t;}).catch(()=>{});}
+
+/* ---------- drawing ---------- */
+const cv=document.getElementById('map'),g=cv.getContext('2d');let DPR=1;
+function resize(){const r=cv.getBoundingClientRect();DPR=window.devicePixelRatio||1;cv.width=Math.max(1,r.width*DPR);cv.height=Math.max(1,r.height*DPR);}
+addEventListener('resize',resize);
+function fit(pts,W,H,pad){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;for(const p of pts){x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1]);}
+  const sc=Math.min((W-2*pad)/Math.max(x1-x0,1),(H-2*pad)/Math.max(y1-y0,1));const ox=(W-(x1-x0)*sc)/2,oy=(H-(y1-y0)*sc)/2;
+  return(x,y)=>[ox+(x-x0)*sc,oy+(y1-y)*sc];} // north up: world y grows up the screen
+function drawMap(){
+  const W=cv.width,H=cv.height;g.clearRect(0,0,W,H);
+  const isPhone=document.body.classList.contains('phone');
+  mapOn(g,W,H,{simple:isPhone&&CFG.phone_map==='simple',names:qs.get('names')!=='0'&&!(isPhone&&CFG.phone_names==='off'),
+    rot:(isPhone&&CFG.phone_map_view==='rotating')||qs.get('view')==='rotating'});
+}
+function mapOn(g,W,H,o){ // the course with a numbered dot per car; o: simple (outline only), names (corner names), rot (rotating)
+  if(!S||!S.cars)return;
+  let pos; // car -> screen point
+  const r=Math.max(10,Math.min(W,H)*.022);
+  if(track&&track.line&&(track.image||o.simple)){ // course art in track pixel space, cars placed by lap distance
+    const iw=track.w,ih=track.h,line=track.line,names=o.names&&track.labels;
+    const at=f=>{const x=(((f%1)+1)%1)*line.length,i=Math.floor(x)%line.length,j=(i+1)%line.length,u=x-Math.floor(x);
+      return[line[i][0]+(line[j][0]-line[i][0])*u,line[i][1]+(line[j][1]-line[i][1])*u];};
+    const frac=c=>((c.dist/L())%1+1)%1;
+    const me=S.cars.find(c=>c.player);
+    const rot=me&&o.rot;
+    const art=sc=>{if(!o.simple){g.drawImage(track.image,0,0,iw,ih);return;} // simple: the racing line as a plain outline
+      g.strokeStyle='#c9d1db';g.lineWidth=Math.max(4,r*.55)/sc;g.lineJoin='round';g.beginPath();line.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.closePath();g.stroke();};
+    let toScr;
+    if(!rot){const sc=Math.min(W/iw,H/ih),ox=(W-iw*sc)/2,oy=(H-ih*sc)/2;
+      g.save();g.translate(ox,oy);g.scale(sc,sc);art(sc);g.restore();toScr=p=>[ox+p[0]*sc,oy+p[1]*sc];}
+    else{ // rotating: zoomed in around the player, the way they're going always up
+      const f=frac(me),P=at(f),Q=at(f+.012),ang=-Math.PI/2-Math.atan2(Q[1]-P[1],Q[0]-P[0]),sc=Math.min(W,H)/(iw*.3),cx=W/2,cy=H*.62;
+      g.save();g.translate(cx,cy);g.rotate(ang);g.scale(sc,sc);g.translate(-P[0],-P[1]);art(sc);g.restore();
+      const ca=Math.cos(ang),sa=Math.sin(ang);toScr=p=>{const dx=(p[0]-P[0])*sc,dy=(p[1]-P[1])*sc;return[cx+dx*ca-dy*sa,cy+dx*sa+dy*ca];};}
+    if(names){g.font=`600 ${Math.round(r*1.05)}px "Segoe UI",sans-serif`;g.textAlign='center';g.textBaseline='middle';
+      for(const l of track.labels){const q=toScr([l[1],l[2]]),x=q[0],y=q[1]-r*2.2,tw=g.measureText(l[0]).width;g.fillStyle='rgba(7,9,12,.82)';g.fillRect(x-tw/2-r*.4,y-r*.8,tw+r*.8,r*1.6);g.fillStyle='#eef1f5';g.fillText(l[0],x,y);}}
+    pos=c=>toScr(at(frac(c)));
+  } else {
+    const keys=[...outline.keys()].sort((a,b)=>a-b),pts=keys.map(k=>outline.get(k));
+    const P=fit(pts.concat(S.cars.map(c=>[c.x,c.y])),W,H,r*2.4);
+    if(pts.length>8){g.strokeStyle='#c9d1db';g.lineWidth=Math.max(4,r*.55);g.lineJoin=g.lineCap='round';g.beginPath();
+      keys.forEach((k,i)=>{const q=P(pts[i][0],pts[i][1]);(i===0||k-keys[i-1]>3)?g.moveTo(q[0],q[1]):g.lineTo(q[0],q[1]);});
+      const lastK=keys[keys.length-1];if(keys[0]<=2&&courseLen?lastK*4>courseLen-12:false){const q=P(pts[0][0],pts[0][1]);g.lineTo(q[0],q[1]);}
+      g.stroke();
+      if(outline.has(0)){const q=P(outline.get(0)[0],outline.get(0)[1]);g.fillStyle='#fff';g.beginPath();g.arc(q[0],q[1],r*.45,0,7);g.fill();}}
+    pos=c=>P(c.x,c.y);
+  }
+  const cars=S.cars.slice().sort((a,b)=>b.place-a.place);
+  for(const c of cars){const q=pos(c),rr=c.player?r*1.3:r;
+    g.beginPath();g.arc(q[0],q[1],rr+3*DPR,0,7);g.fillStyle='#07090c';g.fill();
+    g.beginPath();g.arc(q[0],q[1],rr,0,7);g.fillStyle=c.player?ME:COLORS[c.car%COLORS.length];g.fill();
+    g.fillStyle='#07090c';g.font=`700 ${Math.round(rr*1.15)}px Bahnschrift,"Segoe UI",sans-serif`;g.textAlign='center';g.textBaseline='middle';g.fillText(c.place,q[0],q[1]+rr*.06);}
+}
+function fastestLap(){return Math.min(...S.cars.map(c=>NOTIME(c.best_ms)?Infinity:c.best_ms));}
+function timingRows(){ // by place: {c, gap to the leader, interval to the car ahead}, as the tower shows them
+  const leader=S.cars.find(c=>c.place===1),byPlace=S.cars.slice().sort((a,b)=>a.place-b.place);
+  return byPlace.map((c,k)=>{
+    let gap='',iv='';
+    if(c.place===1){gap=S.phase==='replay'?'':'LEAD';}
+    else if(c.finished&&leader.finished&&!NOTIME(c.total_ms)&&!NOTIME(leader.total_ms)){gap=gapTxt(c.total_ms-leader.total_ms);const a=byPlace[k-1];if(a.finished&&!NOTIME(a.total_ms))iv=gapTxt(c.total_ms-a.total_ms);}
+    else{const pc=prog(c.lap,c.dist),pl=prog(leader.lap,leader.dist);
+      if(pl-pc>=L())gap='+'+Math.floor((pl-pc)/L())+' LAP';else{const t=timeAtProgress(leader.car,pc);if(t!=null)gap=gapTxt(S.clock_ms-t);}
+      const a=byPlace[k-1],ta=timeAtProgress(a.car,pc);if(ta!=null&&prog(a.lap,a.dist)-pc<L())iv=gapTxt(S.clock_ms-ta);}
+    return{c,gap,iv};});
+}
+function render(){
+  const waiting=!S||!S.cars||S.phase==='menu'||S.phase==='prerace';
+  document.getElementById('wait').hidden=!waiting;
+  document.getElementById('wait-sub').textContent=S&&S.phase==='prerace'?'On the grid':'GT4 telemetry';
+  if(waiting)return;
+  document.getElementById('paused').hidden=S.phase!=='paused';
+  const leader=S.cars.find(c=>c.place===1);
+  const fastest=fastestLap();
+  const rows=timingRows().map(({c,gap,iv})=>{
+    const col=c.player?ME:COLORS[c.car%COLORS.length];
+    return `<tr class="${c.player?'me':''}"><td><span class="p" style="background:${col}">${c.place}</span></td><td class="car">${c.driver?esc(c.driver)+' <span class="dim">'+esc(shortName(c.name))+'</span>':esc(c.name)}</td><td>${gap}</td><td class="dim">${iv}</td><td>${lapTime(c.last_ms)}</td><td class="${c.best_ms===fastest?'fast':''}">${lapTime(c.best_ms)}</td></tr>`;});
+  document.getElementById('tb').innerHTML=rows.join('');
+  const me=S.cars.find(c=>c.player)||leader;
+  const lapShown=me.finished?S.laps:Math.max(1,Math.min(me.lap,S.laps));
+  document.getElementById('title').textContent=(S.phase==='replay'?'Replay':'Live timing')+' · Lap '+lapShown+'/'+S.laps;
+  document.getElementById('s-lap').textContent=lapShown+'/'+S.laps;
+  const pp=document.getElementById('ppos');if(pp&&pp.isConnected){const dd=deltaNow(me);
+    pp.innerHTML=`<div><b>Place</b><span class="big">${me.place}</span><span class="dim">/${S.cars.length}</span></div><div><b>Lap</b><span>${lapShown}/${S.laps}</span></div><div><b>Last</b><span>${lapTime(me.last_ms)}</span></div><div><b>Best</b><span class="${me.best_ms===fastest?'fast':''}">${lapTime(me.best_ms)}</span></div><div><b>Delta</b><span style="color:${dd==null?'':dd<0?'var(--good)':'var(--bad)'}">${dd==null?'-':(dd<0?'\u2212':'+')+Math.abs(dd/1000).toFixed(3)}</span></div>`;}
+  document.getElementById('s-clock').textContent=clock(S.clock_ms);
+  const d=deltaNow(me),de=document.getElementById('s-delta');
+  de.textContent=d==null?'-':(d<0?'−':'+')+Math.abs(d/1000).toFixed(3);de.style.color=d==null?'':d<0?'var(--good)':'var(--bad)';
+  const v=me.speed*(UNITS==='mph'?2.23694:3.6);
+  document.getElementById('s-speed').textContent=Math.round(v)+(UNITS==='mph'?' mph':' km/h');
+  const gr=S.player&&S.player.gear;document.getElementById('s-gear').textContent=gr==null?'-':gr===0?'N':gr<0?'R':gr;
+  // the mirror layout: GT4's picture while it sends one (a new one in the last 1.5 s), else a card
+  document.getElementById('m-card').hidden=S.mirror_ms!=null&&S.mirror_ms>=0&&S.mirror_ms<1500;
+}
+/* ---------- dash: radar, g-meter, pedals ---------- */
+let RANGE=30;const rc=document.getElementById('d-radar'),rg=rc.getContext('2d'),gc=document.getElementById('d-g'),gg=gc.getContext('2d');
+let rpmMax=7000;const gTrail=[];
+function radarOn(rg,W,me,square){ // proximity radar in a W-wide square, you in the middle going up; RANGE in metres
+  const RC=String(CFG.radar_colours).split(',').map(x=>'#'+x.trim().replace('#','')),CA=Math.max(.1,Math.min(1,(+CFG.radar_cars||90)/100)); // (GT3's radar settings: cars 10-100 %, yours 10 % more; close cars in the other cars' colour)
+  const c0=W/2,sc=(W/2-6)/RANGE,edge=()=>{rg.beginPath();if(square)rg.rect(2,2,W-4,W-4);else rg.arc(c0,c0,W/2-4,0,7);};
+  rg.fillStyle=square?'rgba(16,20,26,.92)':'rgba(255,255,255,.03)';edge();rg.fill();
+  rg.strokeStyle='rgba(255,255,255,.12)';rg.lineWidth=2;
+  for(const f of [1/3,2/3,1]){rg.beginPath();rg.arc(c0,c0,f*RANGE*sc,0,7);rg.stroke();}
+  rg.beginPath();rg.moveTo(c0,4);rg.lineTo(c0,W-4);rg.moveTo(4,c0);rg.lineTo(W-4,c0);rg.stroke();
+  if(CFG.radar_labels!=='off'){rg.fillStyle='rgba(238,241,245,.5)';rg.font=`600 ${Math.round(W*.04)}px Bahnschrift,"Segoe UI",sans-serif`;rg.textAlign='left';rg.textBaseline='top';
+    for(const f of [1/3,2/3,1])rg.fillText(Math.round(RANGE*f)+' m',c0+W*.012,c0-f*RANGE*sc+W*.008);}
+  rg.save();edge();rg.clip();
+  const cy=Math.cos(me.yaw),sy=Math.sin(me.yaw);let sideL=0,sideR=0;
+  const carL=4.2,carW=1.8;
+  for(const c of S.cars){if(c.player)continue;
+    const dx=c.x-me.x,dy=c.y-me.y,fwd=dx*cy+dy*sy,left=-dx*sy+dy*cy;
+    const d=Math.hypot(fwd,left);if(d>RANGE+4)continue;
+    if(Math.abs(fwd)<carL&&Math.abs(left)<4.5){if(left>0)sideL=1;else sideR=1;}
+    const col=d<6?RC[3]:RC[1];
+    rg.save();rg.translate(c0-left*sc,c0-fwd*sc);rg.rotate(-(c.yaw-me.yaw));rg.fillStyle=col;rg.globalAlpha=CA;
+    rg.fillRect(-carW/2*sc,-carL/2*sc,carW*sc,carL*sc);rg.restore();}
+  rg.fillStyle=RC[0];rg.globalAlpha=Math.min(1,CA+.1);rg.fillRect(c0-carW/2*sc,c0-carL/2*sc,carW*sc,carL*sc);rg.globalAlpha=1;rg.restore();
+  rg.fillStyle=RC[3];if(sideL)rg.fillRect(0,c0-W*.18,W*.035,W*.36);if(sideR)rg.fillRect(W-W*.035,c0-W*.18,W*.035,W*.36);
+  if(performance.now()-zoomT<1500){const fs=Math.round(W*.08),tx=RANGE+' m';rg.font=`700 ${fs}px Bahnschrift,"Segoe UI",sans-serif`;const tw=rg.measureText(tx).width; // just zoomed: show the new range
+    rg.fillStyle='rgba(7,9,12,.85)';rg.fillRect(c0-tw/2-fs*.5,c0+W*.26,tw+fs,fs*1.5);rg.fillStyle='#eef1f5';rg.textAlign='center';rg.textBaseline='middle';rg.fillText(tx,c0,c0+W*.26+fs*.75);}
+}
+let zoomR=null,zoomT=-1e9; // tap a radar: step through the launcher's zoom ranges (radar_zoom), then start again
+function radarTap(base){const s=String(CFG.radar_zoom||'').split(',').map(Number).filter(v=>v>0).sort((a,b)=>a-b);if(!s.length)return;
+  const cur=zoomR||base;zoomR=s.find(v=>v>cur)||s[0];zoomT=performance.now();dirty=true;}
+
+function drawDash(){
+  const B=document.body.classList,inPhone=B.contains('phone')&&document.getElementById('d-mid').closest('#phone');
+  if(!(B.contains('dash')||inPhone)||!S||!S.cars)return;
+  const me=S.cars.find(c=>c.player);if(!me)return;
+  RANGE=zoomR||+(B.contains('phone')?CFG.phone_radar_range:CFG.radar_range)||30;
+  document.querySelector('#d-mid .dlbl').textContent='Radar '+RANGE+' m';
+  rg.clearRect(0,0,rc.width,rc.width);radarOn(rg,rc.width,me,false);
+  const P=S.player||{};const v=me.speed*(UNITS==='mph'?2.23694:3.6);
+  document.getElementById('d-speed').textContent=Math.round(v);document.getElementById('d-unit').textContent=UNITS==='mph'?'mph':'km/h';
+  if(P.rpm!=null){rpmMax=Math.max(rpmMax,P.rpm);document.getElementById('d-rpmbar').style.width=(P.rpm/rpmMax*100)+'%';document.getElementById('d-rpmtxt').textContent=P.rpm+' rpm';}
+  document.getElementById('d-gear').textContent=P.gear==null?'-':P.gear===0?'N':P.gear<0?'R':P.gear;
+  document.getElementById('d-thr').style.height=((P.throttle||0)*100)+'%';document.getElementById('d-brk').style.height=((P.brake||0)*100)+'%';
+  document.getElementById('d-pos').textContent=me.place+'/'+S.cars.length;
+  document.getElementById('d-lap').textContent=(me.finished?S.laps:Math.max(1,Math.min(me.lap,S.laps)))+'/'+S.laps;
+  const d=deltaNow(me),de=document.getElementById('d-delta');de.textContent=d==null?'-':(d<0?'\u2212':'+')+Math.abs(d/1000).toFixed(2);de.style.color=d==null?'':d<0?'var(--good)':'var(--bad)';
+  // g-meter: felt force, 1.5 g at the rim; right = pushed right, up = pushed forward (braking)
+  const G=gc.width,gc0=G/2,R=G/2-8,gx=P.acc_lat==null?0:-P.acc_lat/9.81,gy=P.acc_long==null?0:-P.acc_long/9.81;
+  gTrail.push([gx,gy]);if(gTrail.length>30)gTrail.shift();
+  gg.clearRect(0,0,G,G);gg.strokeStyle='rgba(255,255,255,.14)';gg.lineWidth=2;
+  for(const f of [1/3,2/3,1]){gg.beginPath();gg.arc(gc0,gc0,R*f,0,7);gg.stroke();}
+  gg.beginPath();gg.moveTo(gc0,8);gg.lineTo(gc0,G-8);gg.moveTo(8,gc0);gg.lineTo(G-8,gc0);gg.stroke();
+  const to=(x,y)=>[gc0+Math.max(-1,Math.min(1,x/1.5))*R,gc0-Math.max(-1,Math.min(1,y/1.5))*R];
+  gTrail.forEach((p,i)=>{const q=to(p[0],p[1]);gg.fillStyle='rgba(88,196,220,'+(i/gTrail.length*.45)+')';gg.beginPath();gg.arc(q[0],q[1],5,0,7);gg.fill();});
+  const q=to(gx,gy);gg.fillStyle='#58c4dc';gg.beginPath();gg.arc(q[0],q[1],11,0,7);gg.fill();
+  gg.fillStyle='rgba(238,241,245,.8)';gg.font='600 24px Bahnschrift,"Segoe UI",sans-serif';gg.textAlign='right';gg.fillText(Math.hypot(gx,gy).toFixed(2)+' g',G-6,G-8);gg.textAlign='start';
+}
+function esc(s){return String(s).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));}
+
+/* ---------- phone panels ---------- */
+const PNAME={mirror:'Mirror',position:'Position',timing:'Timing',map:'Track map',radar:'Radar',dash:'Dash'},PW={S:1,M:2,L:3};
+const $id=id=>document.getElementById(id);
+let phoneTwo=null,mirrorTimer=null;
+function panelsWanted(){return String(CFG.phone_panels||'').split(',').map(s=>s.trim().split(':')).filter(a=>PNAME[a[0]]).map(a=>({k:a[0],s:PW[a[1]]?a[1]:'M'}));}
+function wantTwo(){const a=CFG.phone_arrange;return a==='two'||(a!=='one'&&innerWidth>innerHeight);}
+function mirrorStart(img,card){const still=qs.get('still')==='1';clearInterval(mirrorTimer);
+  const load=()=>{img.src=(still?'mirror.jpg':'mirror.mjpg')+'?t='+Date.now();};
+  img.onload=()=>{card.hidden=true;img.hidden=false;};
+  img.onerror=()=>{card.hidden=false;img.hidden=true;if(!still)setTimeout(()=>{if(img.isConnected)load();},1000);};
+  load();if(still)mirrorTimer=setInterval(()=>{if(img.isConnected)load();},200);}
+function buildPhone(){const ph=$id('phone'),P=panelsWanted();phoneTwo=wantTwo();
+  $id('app').hidden=true;ph.hidden=false;park();ph.innerHTML='';
+  if(!P.length){ph.innerHTML='<div id="mirrorcard" style="position:static">No panels chosen in the launcher</div>';return;}
+  let cols=[P];if(phoneTwo&&P.length>1){const tot=P.reduce((a,p)=>a+PW[p.s],0);let acc=0;const L=[],R=[];
+    P.forEach(p=>{(acc<tot/2?L:R).push(p);acc+=PW[p.s];});if(!R.length)R.push(L.pop());cols=[L,R];}
+  ph.style.gridTemplateColumns=cols.length===2?'minmax(0,1fr) minmax(0,1fr)':'minmax(0,1fr)';
+  for(const col of cols){const c=document.createElement('div');c.className='pcol';c.style.gridTemplateRows=col.map(p=>'minmax(0,'+PW[p.s]+'fr)').join(' ');
+    for(const p of col){const n=document.createElement('section');n.className='pnl';n.innerHTML='<h3>'+PNAME[p.k]+'</h3><div class="pbody"></div>';const b=n.lastChild;
+      if(p.k==='timing')b.append($id('tower'));
+      else if(p.k==='map')b.append($id('mapbox'));
+      else if(p.k==='radar')b.append($id('d-mid'));
+      else if(p.k==='dash'){const r=document.createElement('div');r.className='dashrow';r.append($id('d-left'),$id('d-right'));b.append(r);}
+      else if(p.k==='position'){const d=document.createElement('div');d.id='ppos';b.append(d);}
+      else if(p.k==='mirror'){const img=document.createElement('img');img.id='mirrorimg';img.alt='Rear-view mirror';const card=document.createElement('div');card.id='mirrorcard';card.hidden=true;
+        card.textContent='No mirror right now. GT4 sends one in races once the mirror is on the phone (Race HUD page).';b.append(img,card);mirrorStart(img,card);}
+      c.append(n);}
+    ph.append(c);}
+  dirty=true;}
+function park(){const app=$id('app'),dash=$id('dash');dash.append($id('d-left'),$id('d-mid'),$id('d-right'));app.prepend($id('tower'),$id('mapbox'),dash);
+  const m=$id('mirrorimg');if(m){m.onerror=null;m.src='';}clearInterval(mirrorTimer);}
+function unbuildPhone(){const ph=$id('phone');if(ph.hidden)return;park();ph.innerHTML='';ph.hidden=true;$id('app').hidden=false;}
+addEventListener('resize',()=>{if(document.body.classList.contains('phone')&&CFG.phone_arrange==='auto'&&wantTwo()!==phoneTwo){buildPhone();resize();}});
+
+/* ---------- custom layout: the launcher's Telemetry screen tab (hand-off 8) ---------- */
+// telemetry-layout.json from /layout: x y w h in % of the screen, back to front; options as the launcher's editor writes them.
+// ?screen=monitor (the monitor window), up or side; phones without it follow their orientation.
+const DEF_LAYOUT={version:1,bg:'dark',
+ monitor:[{k:'tower',x:1.2,y:2.5,w:31.8,h:33,name:'car',cols:['gap','int','best']},{k:'laptimes',x:1.2,y:37,w:31.8,h:29},{k:'map',x:34.2,y:2.5,w:42.8,h:63.5,detail:'detailed',style:0,names:true},
+  {k:'splits',x:1.2,y:68,w:31.8,h:9},{k:'speed',x:1.2,y:78.5,w:20,h:18.5},{k:'gear',x:22.2,y:78.5,w:10.8,h:18.5},{k:'mirror',x:34.2,y:68,w:42.8,h:29},
+  {k:'position',x:78.2,y:2.5,w:20.6,h:13},{k:'lapbox',x:78.2,y:17,w:20.6,h:13,style:1},{k:'delta',x:78.2,y:31.5,w:20.6,h:13},{k:'tacho',x:78.2,y:46,w:20.6,h:51}],
+ phone_upright:[{k:'mirror',x:3,y:1.5,w:94,h:10},{k:'position',x:3,y:12.5,w:45.5,h:6.5},{k:'lapbox',x:51.5,y:12.5,w:45.5,h:6.5},{k:'tower',x:3,y:20,w:94,h:30,name:'short',cols:['gap','best']},
+  {k:'map',x:3,y:51,w:94,h:33,detail:'detailed',style:0,names:true},{k:'splits',x:3,y:85,w:94,h:6.5},{k:'delta',x:3,y:92.5,w:94,h:6}],
+ phone_sideways:[{k:'mirror',x:1.5,y:3,w:47,h:25},{k:'tower',x:1.5,y:31,w:47,h:66,name:'car',cols:['gap','int']},{k:'map',x:50,y:3,w:48.5,h:62,detail:'detailed',style:0,names:true},
+  {k:'lapbox',x:50,y:68,w:23.5,h:14},{k:'delta',x:75,y:68,w:23.5,h:14,style:1},{k:'speed',x:50,y:84.5,w:23.5,h:12.5},{k:'gear',x:75,y:84.5,w:23.5,h:12.5}]};
+let customFor=null;
+function customScreen(){const s=qs.get('screen');return s==='monitor'?'monitor':s==='up'?'phone_upright':s==='side'?'phone_sideways':innerWidth>innerHeight?'phone_sideways':'phone_upright';}
+function buildCustom(){const el=$id('custom'),L=LAYOUT||DEF_LAYOUT,scr=customScreen(),items=L[scr]||DEF_LAYOUT[scr];customFor=scr;
+  $id('app').hidden=true;el.hidden=false;el.className=L.bg==='black'?'black':'';el.innerHTML='';
+  for(const o of items){if(!CDRAW[o.k]&&o.k!=='mirror')continue;
+    const b=document.createElement('div');b.className='cbox'+(o.k==='map'?' bare':o.k==='radar'?' clear':'');b.style.cssText=`left:${o.x}%;top:${o.y}%;width:${o.w}%;height:${o.h}%`;
+    if(o.k==='mirror'){const img=document.createElement('img');img.id='mirrorimg';img.alt='Rear-view mirror';const card=document.createElement('div');card.id='mirrorcard';card.hidden=true;
+      card.textContent='No mirror right now. GT4 sends one during races.';b.append(img,card);mirrorStart(img,card);}
+    else{const c=document.createElement('canvas');c._o=o;b.append(c);if(o.k==='radar')c.onclick=()=>radarTap(+o.range||+CFG.radar_range||30);}
+    el.append(b);}
+  sizeCustom();}
+function sizeCustom(){const d=window.devicePixelRatio||1;for(const c of $id('custom').querySelectorAll('canvas')){const w=Math.max(1,Math.round(c.clientWidth*d)),h=Math.max(1,Math.round(c.clientHeight*d));if(c.width!==w||c.height!==h){c.width=w;c.height=h;}}}
+function unbuildCustom(){const el=$id('custom');if(el.hidden)return;const m=$id('mirrorimg');if(m){m.onerror=null;m.src='';}clearInterval(mirrorTimer);el.innerHTML='';el.hidden=true;$id('app').hidden=false;}
+addEventListener('resize',()=>{if(document.body.classList.contains('custom')){if(customScreen()!==customFor)buildCustom();else sizeCustom();}});
+const NUM='Bahnschrift,"DIN Alternate","Segoe UI",sans-serif',MUTE='rgba(238,241,245,.55)',FG='#eef1f5';
+function txt(x,s,px,col,X,Y,al,wt){x.font=`${wt||600} ${px}px ${NUM}`;x.fillStyle=col;x.textAlign=al||'left';x.textBaseline='middle';x.fillText(s,X,Y);}
+const band=(H,W,ratio)=>Math.min(H,W/ratio); // content height that fits this width
+const deltaTxt=d=>d==null?'-':(d<0?'−':'+')+Math.abs(d/1000).toFixed(3);
+const carCol=c=>c.player?ME:COLORS[c.car%COLORS.length];
+function cdot(x,X,Y,r,col,n){x.beginPath();x.arc(X,Y,r,0,7);x.fillStyle=col;x.fill();txt(x,n,r*1.15,'#07090c',X,Y+r*.06,'center',700);}
+function shortName(n){const w=String(n).replace(/'\d\d\b/g,'').trim().split(/\s+/);return(w[1]||w[0]||'').slice(0,3).toUpperCase();} // the model, not the maker: Honda TODAY G -> TOD
+const cTrail=[];
+const CDRAW={
+ tower(x,W,H,o){const rows=timingRows(),n=rows.length,cols=(o.cols||['gap']).filter(k=>['gap','int','best','last'].includes(k)),fastest=fastestLap();
+  const rh=Math.min(H/(n+1),W/((o.name==='short'&&!rows.some(r=>r.c.driver)?3.4:5.6)+2.6*cols.length+.6)),cw=rh*2.6,colX=j=>W-rh*.3-(cols.length-1-j)*cw;
+  txt(x,o.name==='driver'?'DRIVER':'CAR',rh*.34,MUTE,rh*1.25,rh*.55);cols.forEach((k,j)=>txt(x,k.toUpperCase(),rh*.34,MUTE,colX(j),rh*.55,'right'));
+  rows.forEach(({c,gap,iv},i)=>{const y=rh*(i+1.5);
+    if(c.player){x.fillStyle='rgba(242,179,61,.14)';x.fillRect(0,y-rh/2,W,rh);}
+    cdot(x,rh*.62,y,rh*.36,carCol(c),c.place);
+    // (Race Lab drivers: the car's short code after the name; 21 Oct, developer: with Car or Short names too, an AI car with a driver
+    // shows the driver (Short: the surname) and its code)
+    const sur=c.driver?String(c.driver).trim().split(/\s+/).pop():'';
+    const nm=o.name==='short'?(c.driver&&!c.player?sur+' '+shortName(c.name):shortName(c.name)):o.name==='driver'?(c.player?'You':c.driver?c.driver+'  '+shortName(c.name):c.name):(c.driver&&!c.player?c.driver+'  '+shortName(c.name):c.name);
+    x.save();x.beginPath();x.rect(0,y-rh/2,W-rh*.5-cols.length*cw+rh*.6,rh);x.clip();txt(x,nm,rh*.44,c.player?ME:FG,rh*1.25,y,'left',400);x.restore();
+    cols.forEach((k,j)=>{const v=k==='gap'?gap:k==='int'?iv:lapTime(k==='best'?c.best_ms:c.last_ms);
+      txt(x,v,rh*.42,k==='int'?MUTE:k==='best'&&c.best_ms===fastest?'#b67cf0':FG,colX(j),y,'right',500);});});},
+ lapbox(x,W,H,o,me){const lap=me.finished?S.laps:Math.max(1,Math.min(me.lap,S.laps)),both=o.style===1,h=band(H,W,both?3.2:1.9),y=H/2;
+  txt(x,'LAP',h*.2,MUTE,h*.22,y);x.font=`700 ${h*.6}px ${NUM}`;const lw=x.measureText(lap).width;
+  txt(x,lap,h*.6,FG,h*.8,y+h*.03,'left',700);txt(x,'/'+S.laps,h*.34,MUTE,h*.8+lw+h*.04,y+h*.08);
+  if(both)txt(x,clock(S.clock_ms),h*.34,FG,W-h*.22,y+h*.04,'right');},
+ laptimes(x,W,H,o,me){const fastest=fastestLap(),each=o.style===1;let rows;
+  if(each)rows=S.cars.filter(c=>!NOTIME(c.best_ms)).sort((a,b)=>a.best_ms-b.best_ms).map(c=>[c.name,lapTime(c.best_ms),c.best_ms===fastest?'#b67cf0':c.player?ME:FG,c]);
+  else{const best=Math.min(...myLaps),first=Math.max(0,myLaps.length-7);
+    rows=myLaps.slice(first).map((ms,i)=>['Lap '+(first+i+1),lapTime(ms),ms===fastest?'#b67cf0':ms===best?'#3ecf8e':FG]);
+    if(!me.finished)rows.push(['Lap '+(myLaps.length+1),clock(me.lap_ms),MUTE]);}
+  const rh=Math.min(H/(Math.max(rows.length,5)+1),W/6.2);
+  txt(x,each?'BEST LAP OF EACH CAR':'YOUR LAPS',rh*.34,MUTE,rh*.35,rh*.55);
+  if(!rows.length)txt(x,'No lap times yet',rh*.42,MUTE,rh*.35,rh*1.5,'left',400);
+  rows.forEach((r,i)=>{const y=rh*(i+1.5);let X=rh*.35;if(each){cdot(x,rh*.62,y,rh*.32,carCol(r[3]),r[3].place);X=rh*1.2;}
+    txt(x,r[0],rh*.42,each&&r[3].player?ME:FG,X,y,'left',400);txt(x,r[1],rh*.44,r[2],W-rh*.35,y,'right');});},
+ map(x,W,H,o){mapOn(x,W,H,{simple:o.detail==='simple',rot:o.style===1,names:o.names!==false&&qs.get('names')!=='0'});},
+ splits(x,W,H,o,me){ // purple: fastest of anyone, green: your best, yellow: slower (player.sectors in FEED.md)
+  const P=S.player||{},Q=sectorData(me),cur=Q.cur,best=Q.best,fast=Q.fast,h=band(H,W,5),y0=(H-h)/2,cw=(W-h*.3)/3,live=cur.findIndex(s=>!(s>0));
+  for(let k=0;k<3;k++){const X=h*.15+k*cw,v=cur[k]>0?cur[k]:null,col=v==null?null:fast[k]>0&&v<=fast[k]?'#b67cf0':best[k]>0&&v<=best[k]?'#3ecf8e':'#f7d64a';
+    x.fillStyle='rgba(255,255,255,.07)';x.fillRect(X+2,y0+h*.14,cw-4,h*.72);if(col){x.fillStyle=col;x.fillRect(X+2,y0+h*.14,cw*.05,h*.72);}
+    txt(x,'S'+(k+1),h*.24,MUTE,X+cw*.12,y0+h/2);
+    const t=v?(v/1000).toFixed(3):Q.live&&k===live?((me.lap_ms-cur.slice(0,k).reduce((a,b)=>a+b,0))/1000).toFixed(1):'--.---';
+    txt(x,t,h*.34,col||FG,X+cw-cw*.08,y0+h*.52,'right');}},
+ speed(x,W,H,o,me){const mph=(o.units||UNITS)==='mph',h=band(H,W,1.6),y0=(H-h)/2;
+  txt(x,Math.round(me.speed*(mph?2.23694:3.6)),h*.58,FG,W/2,y0+h*.44,'center',700);txt(x,mph?'MPH':'KM/H',h*.16,MUTE,W/2,y0+h*.82,'center');},
+ gear(x,W,H){const gr=S.player&&S.player.gear,h=band(H,W,.8),y0=(H-h)/2;
+  txt(x,gr==null?'-':gr===0?'N':gr<0?'R':gr,h*.62,ME,W/2,y0+h*.46,'center',700);txt(x,'GEAR',h*.15,MUTE,W/2,y0+h*.84,'center');},
+ position(x,W,H,o,me){const h=band(H,W,1.7),y0=(H-h)/2,a=String(me.place),b='/'+S.cars.length;txt(x,'POSITION',h*.16,MUTE,W/2,y0+h*.2,'center');
+  x.font=`700 ${h*.56}px ${NUM}`;const wa=x.measureText(a).width;x.font=`600 ${h*.32}px ${NUM}`;const X=(W-wa-x.measureText(b).width)/2;
+  txt(x,a,h*.56,ME,X,y0+h*.62,'left',700);txt(x,b,h*.32,MUTE,X+wa+h*.03,y0+h*.68);},
+ delta(x,W,H,o,me){const d=deltaNow(me),col=d==null?FG:d<0?'#3ecf8e':'#e5484d',h=band(H,W,o.style===1?2.4:3.6),y=H/2;
+  if(o.style===1){txt(x,deltaTxt(d),h*.5,col,W/2,y,'center');return;}
+  txt(x,deltaTxt(d),h*.5,col,h*.25,y);const bx=W*.45,bw=W*.5,bh=h*.24;x.fillStyle='rgba(255,255,255,.12)';x.fillRect(bx,y-bh/2,bw,bh);
+  if(d!=null){const f=Math.min(1,Math.abs(d)/500)*bw/2;x.fillStyle=col;x.fillRect(d<0?bx+bw/2-f:bx+bw/2,y-bh/2,f,bh);}
+  x.fillStyle='rgba(255,255,255,.6)';x.fillRect(bx+bw/2-1,y-bh/2-3,2,bh+6);},
+ tacho(x,W,H,o){const P=S.player||{},rpm=P.rpm||0;if(P.rpm!=null)rpmMax=Math.max(rpmMax,P.rpm);
+  const red=P.redline||rpmMax*.92,top=Math.ceil(Math.max(rpmMax,red)/1000)+1;
+  if(o.style===1){ // rev lights: from 62% of the redline up, all blue at the redline
+   const h=band(H,W,6),n=10,gap=h*.12,lw=(W-gap*(n+1))/n,flash=rpm>=red&&Math.floor(performance.now()/120)%2;
+   for(let i=0;i<n;i++){const on=rpm>=red*(.62+i*.038)||flash,col=i<4?'#3ecf8e':i<7?'#f7d64a':i<9?'#e5484d':'#4a8df5';
+     x.fillStyle=on?(flash?'#4a8df5':col):'rgba(255,255,255,.12)';x.beginPath();x.arc(gap+lw/2+i*(lw+gap),H/2,Math.min(lw,h*.7)/2,0,7);x.fill();}return;}
+  const r=Math.min(W,H)/2*.9,cx=W/2,cy=H/2+r*.05,a0=Math.PI*.75,a1=Math.PI*2.25,A=v=>a0+(a1-a0)*Math.min(v,top)/top;
+  x.lineWidth=r*.07;x.strokeStyle='rgba(229,72,77,.85)';x.beginPath();x.arc(cx,cy,r*.93,A(red/1000),a1);x.stroke();
+  for(let i=0;i<=top*2;i++){const a=A(i/2),big=i%2===0,hot=i/2>=red/1000;x.strokeStyle=hot?'#e5484d':'rgba(255,255,255,.7)';x.lineWidth=big?Math.max(1.5,r*.03):Math.max(1,r*.014);
+    const r0=big?.76:.82;x.beginPath();x.moveTo(cx+Math.cos(a)*r*r0,cy+Math.sin(a)*r*r0);x.lineTo(cx+Math.cos(a)*r*.88,cy+Math.sin(a)*r*.88);x.stroke();
+    if(big)txt(x,i/2,r*.15,hot?'#e5484d':'rgba(255,255,255,.8)',cx+Math.cos(a)*r*.62,cy+Math.sin(a)*r*.62,'center');}
+  const a=A(rpm/1000);x.strokeStyle=rpm>=red?'#e5484d':ME;x.lineWidth=Math.max(2,r*.035);x.lineCap='round';x.beginPath();
+  x.moveTo(cx-Math.cos(a)*r*.1,cy-Math.sin(a)*r*.1);x.lineTo(cx+Math.cos(a)*r*.86,cy+Math.sin(a)*r*.86);x.stroke();x.lineCap='butt';
+  x.fillStyle='#2a333d';x.beginPath();x.arc(cx,cy,r*.07,0,7);x.fill();
+  txt(x,Math.round(rpm/100)*100,r*.2,FG,cx,cy+r*.42,'center',700);txt(x,'RPM',r*.1,MUTE,cx,cy+r*.6,'center');},
+ radar(x,W,H,o,me){RANGE=zoomR||+o.range||+CFG.radar_range||30;const s=Math.min(W,H);x.save();x.translate((W-s)/2,(H-s)/2);radarOn(x,s,me,o.style===1);x.restore();},
+ pedals(x,W,H){const P=S.player||{};[[P.brake||0,'#e5484d',.12],[P.throttle||0,'#3ecf8e',.56]].forEach(([v,col,f])=>{const X=W*f,pw=W*.32,py=H*.06,ph=H*.88;
+  x.fillStyle='rgba(255,255,255,.1)';x.fillRect(X,py,pw,ph);x.fillStyle=col;x.fillRect(X,py+ph*(1-v),pw,ph*v);});},
+ gmeter(x,W,H,o){const P=S.player||{},gx=P.acc_lat==null?0:-P.acc_lat/9.81,gy=P.acc_long==null?0:-P.acc_long/9.81,R=Math.min(W,H)*.45,cx=W/2,cy=H/2;
+  cTrail.push([gx,gy]);if(cTrail.length>30)cTrail.shift();
+  x.strokeStyle='rgba(255,255,255,.14)';x.lineWidth=2;for(const f of [1/3,2/3,1]){x.beginPath();x.arc(cx,cy,R*f,0,7);x.stroke();}
+  const to=(a,b)=>[cx+Math.max(-1,Math.min(1,a/1.5))*R,cy-Math.max(-1,Math.min(1,b/1.5))*R];
+  if(o.style!==1)cTrail.forEach((p,i)=>{const q=to(p[0],p[1]);x.fillStyle='rgba(88,196,220,'+(i/cTrail.length*.45)+')';x.beginPath();x.arc(q[0],q[1],R*.04,0,7);x.fill();});
+  const q=to(gx,gy);x.fillStyle='#58c4dc';x.beginPath();x.arc(q[0],q[1],R*.08,0,7);x.fill();}};
+// The splits' times: player.sectors / sectors_best / sectors_fastest when the feed sends them, else GT4.exe's per-car
+// sector_ms (this lap so far) and best_sector_ms (each car's best this race; the fastest of anyone is the smallest).
+function sectorData(me){const P=S.player||{};
+  if(P.sectors)return{cur:P.sectors,best:P.sectors_best||[],fast:P.sectors_fastest||[],live:true};
+  if(!me||!me.sector_ms)return{cur:[],best:[],fast:[],live:false};
+  const fast=[];for(const c of S.cars)(c.best_sector_ms||[]).forEach((v,k)=>{if(v>0&&!(fast[k]<=v))fast[k]=v;});
+  return{cur:me.sector_ms,best:me.best_sector_ms||[],fast,live:true};}
+function drawCustom(){if(!document.body.classList.contains('custom')||!S||!S.cars)return;const me=S.cars.find(c=>c.player);if(!me)return;
+  for(const c of $id('custom').querySelectorAll('canvas')){const x=c.getContext('2d');x.setTransform(1,0,0,1,0,0);x.clearRect(0,0,c.width,c.height);
+    try{CDRAW[c._o.k](x,c.width,c.height,c._o,me);}catch(e){}}}
+
+rc.onclick=()=>radarTap(+(document.body.classList.contains('phone')?CFG.phone_radar_range:CFG.radar_range)||30);
+
+/* ---------- feed ---------- */
+let dirty=false;
+function connect(){const es=new EventSource('feed');
+  es.onmessage=e=>{try{const s=JSON.parse(e.data);if(s.units&&s.units.speed)UNITS=s.units.speed==='mph'?'mph':'kmh';if(s.cars)ingest(s);S=s;dirty=true;}catch(_){}};
+  es.onerror=()=>{es.close();S=null;dirty=true;setTimeout(connect,2000);};}
+(function loop(){if(dirty){render();drawDash();dirty=false;}drawMap();drawCustom();requestAnimationFrame(loop);})();
+layout();connect();
+</script>
+</body>
+</html>

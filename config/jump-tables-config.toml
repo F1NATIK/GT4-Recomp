@@ -1,0 +1,62 @@
+# Jump tables whose base ps2_recomp computes itself but whose case count it does not
+# find (gt4_data_entry_points.py). ps2_recomp consults [jump_tables] only after it has
+# computed the same table address (control_flow_analyzer.cpp).
+[jump_tables]
+
+[[jump_tables.table]]
+# jr at 0x4deb30 in FUN_004de8b8, bound sltiu 9
+address = "0x6bd910"
+entries = [
+  { index = 0, target = "0x4ded80" },
+  { index = 1, target = "0x4ded80" },
+  { index = 2, target = "0x4ded80" },
+  { index = 3, target = "0x4deb80" },
+  { index = 4, target = "0x4debb8" },
+  { index = 5, target = "0x4deb38" },
+  { index = 6, target = "0x4deb50" },
+  { index = 7, target = "0x4deb68" },
+  { index = 8, target = "0x4ded80" },
+]
+
+[[jump_tables.table]]
+# jr at 0x4e2ab8 in FUN_004e2840, bound sltiu 9
+address = "0x6befc0"
+entries = [
+  { index = 0, target = "0x4e2d08" },
+  { index = 1, target = "0x4e2d08" },
+  { index = 2, target = "0x4e2d08" },
+  { index = 3, target = "0x4e2b08" },
+  { index = 4, target = "0x4e2b40" },
+  { index = 5, target = "0x4e2ac0" },
+  { index = 6, target = "0x4e2ad8" },
+  { index = 7, target = "0x4e2af0" },
+  { index = 8, target = "0x4e2d08" },
+]
+
+[[jump_tables.table]]
+# jr at 0x53ba28 in FUN_0053b858, bound sltiu 10
+address = "0x6c3c20"
+entries = [
+  { index = 0, target = "0x53ba30" },
+  { index = 1, target = "0x53ba80" },
+  { index = 2, target = "0x53ba90" },
+  { index = 3, target = "0x53baa0" },
+  { index = 4, target = "0x53bab0" },
+  { index = 5, target = "0x53bac0" },
+  { index = 6, target = "0x53bad0" },
+  { index = 7, target = "0x53bae0" },
+  { index = 8, target = "0x53bb00" },
+  { index = 9, target = "0x53bb18" },
+]
+
+[[jump_tables.table]]
+# jr at 0x53ca54 in FUN_0053c880, bound sltiu 6
+address = "0x6c4170"
+entries = [
+  { index = 0, target = "0x53ca60" },
+  { index = 1, target = "0x53ca68" },
+  { index = 2, target = "0x53ca70" },
+  { index = 3, target = "0x53ca78" },
+  { index = 4, target = "0x53ca80" },
+  { index = 5, target = "0x53ca88" },
+]
