@@ -36,9 +36,7 @@ namespace gt4stock
         if (showUnbuilt_ || (full_.read && full_.internalRes))
             v.push_back(1);
         v.push_back(3); // (no Screen tab: its Display card is on Resolution, developer 2026-10-19)
-        // Cameras (full-m2, Cameras): with a GT4 program that has the race cameras (its marker).
-        if (showUnbuilt_ || (full_.read && full_.cameras))
-            v.push_back(6);
+        // (No Cameras tab: Driving > Race cameras since developer 2026-10-30, pageRaceCameras.)
         // Detail and textures (full-m2, Detail): with a GT4 program that has car and wheel detail (its marker); a release
         // build then shows only the live Cars card.
         if (showUnbuilt_ || (full_.read && full_.texDump))
@@ -165,30 +163,39 @@ namespace gt4stock
             auto live = [&](FullScaling sc) {
                 return fullScalingBuilt(sc) && !(full_.read && ((sc == FullScaling::Bicubic && !full_.bicubic) || (sc == FullScaling::Lanczos && !full_.lanczos)));
             };
-            int rows = 0;
+            // One dropdown with the chosen filter's hint under it (developer 2026-10-30: "utilize drop downs ... not so cluttered").
+            std::vector<FullScaling> offered;
+            std::vector<std::string> labels;
+            int sel = 0;
             for (const Choice &ch : choices)
-                rows += live(ch.s) || dev;
+            {
+                if (!live(ch.s) && !dev)
+                    continue;
+                if (ch.s == f.scaling)
+                    sel = static_cast<int>(offered.size());
+                offered.push_back(ch.s);
+                labels.push_back(std::string(fullScalingLabel(ch.s)) + (live(ch.s) ? "" : " (not in this GT4 program)"));
+            }
             const char *scale = fullScalingLabel(live(f.scaling) ? f.scaling : FullScaling::Bilinear);
             const bool exeOld = full_.read && ((f.scaling == FullScaling::Bicubic && !full_.bicubic) || (f.scaling == FullScaling::Lanczos && !full_.lanczos));
-            const float h = 52 + rows * 32 + 10 + (dev && exeOld ? 20 : 0) + 14;
+            const char *selHint = "";
+            for (const Choice &ch : choices)
+                if (ch.s == f.scaling)
+                    selHint = ch.hint;
+            const float h = 48 + 34 + 8 + 18 + (dev && exeOld ? 20 : 0) + 14;
             const Rectangle c = R(x0, y, w, h);
             fullui::card(ui_, c, "Scaling", {Pill::ClassicToo});
             float yy = c.y + 48;
-            for (const Choice &ch : choices)
+            ui_.text("Picture filter", c.x + 20, yy + 8, 14, t.text);
+            if (ui_.dropdown("scaling", R(c.x + c.width - 20 - 240, yy, 240, 34), labels, sel))
             {
-                const bool built = live(ch.s);
-                if (!built && !dev)
-                    continue;
-                if (fullui::radio(ui_, std::string("scale-") + fullScalingKey(ch.s), R(c.x + 10, yy, c.width - 20, 30), f.scaling == ch.s, fullScalingLabel(ch.s),
-                                  ch.hint, built, !built))
-                {
-                    f.scaling = ch.s;
-                    st_.filter = ch.s == FullScaling::Nearest ? PictureFilter::Nearest : PictureFilter::Smooth;
-                    markDirty();
-                }
-                yy += 32;
+                f.scaling = offered[static_cast<size_t>(sel)];
+                st_.filter = f.scaling == FullScaling::Nearest ? PictureFilter::Nearest : PictureFilter::Smooth;
+                markDirty();
             }
-            yy += 10;
+            yy += 34 + 8;
+            ui_.text(ui_.fit(strf("%s: %s", fullScalingLabel(f.scaling), selHint), c.width - 40, 12.5f), c.x + 20, yy, 12.5f, t.faint);
+            yy += 18;
             if (dev && exeOld)
                 fullui::notBuilt(ui_, c.x + 20, yy + 2, w - 40, "the GT4 program here has no " + std::string(scale) + " yet: Play gives it Bilinear.");
             y += h + 12;
@@ -533,104 +540,95 @@ namespace gt4stock
         (void)y1;
         // Presets (developer, 2026-10-19): Automatic / 720p / 1080p / 1440p / 4K set the internal resolution below (and a window's
         // size); Custom leaves it as chosen. The screen's shape is on the same card. The other cards stay as they were.
-        {
-            const MonitorInfo *mon = selectedMonitor();
-            const int monH = mon ? mon->h : 0;
-            static const char *const kPresetSize[kFullResPresets] = {"", "", "1280 \xc3\x97 720", "1920 \xc3\x97 1080", "2560 \xc3\x97 1440", "3840 \xc3\x97 2160"};
-            const std::string note = "Full screen keeps your monitor's own resolution; in a window the preset sets the window's size too. Custom: the "
-                                     "internal resolution below, as you choose it.";
-            const float h = 48 + 38 + 6 + 34 + 8 + ui_.wrapHeight(note, cw - 40, 12.5f) + 12;
-            const Rectangle c = R(x0, y0, cw, h);
-            if (live)
-                fullui::card(ui_, c, "Resolution", {Pill::Full});
-            else
-                fullui::card(ui_, c, "Resolution", {Pill::NotBuilt, Pill::Full});
-            const int order[kFullResPresets] = {1, 2, 3, 4, 5, 0}; // (Automatic first, Custom last)
-            const float bw = std::floor((c.width - 20 - (kFullResPresets - 1) * 8) / static_cast<float>(kFullResPresets));
-            for (int i = 0; i < kFullResPresets; ++i)
-            {
-                const int p = order[i];
-                std::string hint;
-                if (p == 0)
-                    hint = strf("%s, set below", fullScaleLabel(std::clamp(f.internalRes, 1, kFullScales)));
-                else if (p == 1)
-                    hint = monH > 0 ? strf("%d\xc3\x97 here", fullPresetScale(1, monH)) : std::string("your screen");
-                else
-                    hint = strf("%s \xc2\xb7 %d\xc3\x97", kPresetSize[p], fullPresetScale(p, monH));
-                if (fullui::radio(ui_, strf("res-preset-%d", p), R(c.x + 10 + i * (bw + 8), c.y + 48, bw, 32), f.resPreset == p, fullPresetLabel(p), hint, live,
-                                  !live && dev))
-                {
-                    f.resPreset = p;
-                    static const int kW[kFullResPresets] = {0, 0, 1280, 1920, 2560, 3840}, kH[kFullResPresets] = {0, 0, 720, 1080, 1440, 2160};
-                    if (!st_.fullscreen && kW[p] > 0 && (!mon || (kW[p] <= mon->w && kH[p] <= mon->h)))
-                        st_.windowW = kW[p], st_.windowH = kH[p];
-                    markDirty();
-                }
-            }
-            // The shape: 16:9, 21:9, 32:9 here; the others (4:3, three screens, square pixels) on Screen shape.
-            float y = c.y + 48 + 38 + 6;
-            ui_.text("Shape", c.x + 20, y + 8, 14, t.text);
-            const bool exeLacks = full_.read && !full_.aspect, exeLacksWide = full_.read && !full_.wideShapes;
-            int shape = f.aspect == FullAspect::Wide ? 0 : f.aspect == FullAspect::Ultra21 ? 1 : f.aspect == FullAspect::Ultra32 ? 2 : f.aspect == FullAspect::Triple48 ? 3 : -1;
-            const float sw = std::min(620.0f, c.width - 140);
-            if (ui_.segmented("res-shape", R(c.x + 100, y, sw, 34), {"Widescreen 16:9", "Ultrawide 21:9", "Super ultrawide 32:9", "Three screens 48:9"}, shape,
-                              !exeLacks && !exeLacksWide, 12.5f))
-            {
-                f.aspect = shape == 1 ? FullAspect::Ultra21 : shape == 2 ? FullAspect::Ultra32 : shape == 3 ? FullAspect::Triple48 : FullAspect::Wide;
-                markDirty();
-            }
-            if (shape < 0)
-                ui_.text(ui_.fit(strf("Now: %s (Screen shape tab)", fullAspectLabel(f.aspect)), c.width - sw - 140, 12.5f), c.x + 100 + sw + 16, y + 9, 12.5f, t.muted);
-            y += 34 + 8;
-            ui_.wrap(note, c.x + 20, y, c.width - 40, 12.5f, ui::alpha(t.faint, 0.9f));
-            y0 = c.y + c.height + 14;
-        }
+        // One card, two dropdowns (developer 2026-10-30: "utilize drop downs ... not so clutered"): the preset (Automatic / 720p / 1080p
+        // / 1440p / 4K set the internal resolution and a window's size; Custom leaves it as chosen) and the internal resolution
+        // (a choice there makes the preset Custom), each with its hint under it; then texture smoothing.
         const int scale = std::clamp(f.internalRes, 1, kFullScales);
         // A scale that is not offered yet (4x: greyed with its reason in test builds, left out in release builds, as the
         // other choices GT4 does not have yet): GT4 gets native (gt4full_settings.cpp, adjustFullLaunch).
         const bool offeredNow = live && fullScaleBuilt(scale);
         const int given = offeredNow ? scale : 1;
         const bool fast = fullDrawingFast(given, f.drawing);
-        int rows = 0;
-        for (int s = 1; s <= kFullScales; ++s)
-            rows += fullScaleBuilt(s) || dev;
         float leftBottom = y0;
         {
-            const float h = 48 + rows * 34 + 10 + 60 + (live ? 0 : 22) + 12 + 60;
-            const Rectangle c = R(x0, y0, colW, h);
+            const MonitorInfo *mon = selectedMonitor();
+            const int monH = mon ? mon->h : 0;
+            static const char *const kPresetSize[kFullResPresets] = {"", "", "1280 \xc3\x97 720", "1920 \xc3\x97 1080", "2560 \xc3\x97 1440", "3840 \xc3\x97 2160"};
+            const std::string note = "GT4 draws its pictures at this many times the PS2's size, then scales them to your screen: sharper edges on the cars "
+                                     "and the track. Full screen keeps your monitor's own resolution; in a window the preset sets the window's size too.";
+            const float cardW = std::min(cw, 760.0f);
+            const float h = 48 + 2 * (34 + 8 + 18 + 12) + ui_.wrapHeight(note, cardW - 40, 12.5f) + 10 + (!live && dev ? 22 : 0) + 12 + 60;
+            const Rectangle c = R(x0, y0, cardW, h);
             if (live)
-                fullui::card(ui_, c, "Internal resolution", {Pill::Full});
+                fullui::card(ui_, c, "Resolution", {Pill::Full});
             else
-                fullui::card(ui_, c, "Internal resolution", {Pill::NotBuilt, Pill::Full});
+                fullui::card(ui_, c, "Resolution", {Pill::NotBuilt, Pill::Full});
             float y = c.y + 48;
-            for (int s = 1; s <= kFullScales; ++s)
+            const float ddW = std::min(300.0f, c.width * 0.5f), ddX = c.x + c.width - 20 - ddW;
+            // The preset
             {
-                if (!fullScaleBuilt(s) && !dev)
-                    continue;
-                const bool offered = live && fullScaleBuilt(s);
-                std::string hint = fullScaleSize(s);
-                if (s == 1)
-                    hint += " (GT4's own)";
-                else if (*fullScaleSpeed(s))
-                    hint += std::string(" \xc2\xb7 ") + fullScaleSpeed(s);
-                if (live && !fullScaleBuilt(s))
-                    hint = fullScaleWhy(s);
-                if (fullui::radio(ui_, strf("internal-res-%d", s), R(c.x + 10, y, c.width - 20, 32), scale == s, fullScaleLabel(s), hint, offered,
-                                  !live && dev))
+                const int order[kFullResPresets] = {1, 2, 3, 4, 5, 0}; // (Automatic first, Custom last)
+                std::vector<std::string> labels;
+                int sel = 0;
+                for (int i = 0; i < kFullResPresets; ++i)
                 {
-                    f.internalRes = s;
-                    f.resPreset = 0; // (a choice here: Custom)
+                    labels.push_back(fullPresetLabel(order[i]));
+                    if (f.resPreset == order[i])
+                        sel = i;
+                }
+                ui_.text("Preset", c.x + 20, y + 8, 14, live ? t.text : t.faint);
+                if (ui_.dropdown("res-preset", R(ddX, y, ddW, 34), labels, sel, live))
+                {
+                    const int p = order[sel];
+                    f.resPreset = p;
+                    static const int kW[kFullResPresets] = {0, 0, 1280, 1920, 2560, 3840}, kH[kFullResPresets] = {0, 0, 720, 1080, 1440, 2160};
+                    if (!st_.fullscreen && kW[p] > 0 && (!mon || (kW[p] <= mon->w && kH[p] <= mon->h)))
+                        st_.windowW = kW[p], st_.windowH = kH[p];
                     markDirty();
                 }
-                y += 34;
+                const int p = f.resPreset;
+                const std::string hint = p == 0   ? strf("Custom: %s, chosen below", fullScaleLabel(scale))
+                                         : p == 1 ? (monH > 0 ? strf("Automatic: %d\xc3\x97 for this monitor", fullPresetScale(1, monH)) : std::string("Automatic: from your screen"))
+                                                  : strf("%s: %s \xc2\xb7 %d\xc3\x97", fullPresetLabel(p), kPresetSize[p], fullPresetScale(p, monH));
+                y += 42;
+                ui_.text(ui_.fit(hint, c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
+                y += 30;
             }
-            y += 10;
-            y += ui_.wrap("GT4 draws its pictures at this many times the PS2's size, then scales them to your screen: sharper edges on the cars and the "
-                          "track. Speeds measured on a laptop with an RTX 5060.",
-                          c.x + 20, y, c.width - 40, 12.5f, ui::alpha(t.faint, 0.9f)) +
-                 4;
+            // The internal resolution
+            {
+                std::vector<int> values;
+                std::vector<std::string> labels;
+                int sel = 0;
+                for (int s = 1; s <= kFullScales; ++s)
+                {
+                    if (!fullScaleBuilt(s) && !dev)
+                        continue;
+                    if (s == scale)
+                        sel = static_cast<int>(values.size());
+                    values.push_back(s);
+                    labels.push_back(strf("%s \xc2\xb7 %s", fullScaleLabel(s), fullScaleSize(s)) + (fullScaleBuilt(s) ? "" : " (not yet)"));
+                }
+                ui_.text("Internal resolution", c.x + 20, y + 8, 14, live ? t.text : t.faint);
+                if (!values.empty() && ui_.dropdown("internal-res", R(ddX, y, ddW, 34), labels, sel, live))
+                {
+                    const int s = values[static_cast<size_t>(sel)];
+                    if (fullScaleBuilt(s))
+                    {
+                        f.internalRes = s;
+                        f.resPreset = 0; // (a choice here: Custom)
+                        markDirty();
+                    }
+                }
+                std::string hint = scale == 1 ? std::string("GT4's own size") : *fullScaleSpeed(scale) ? std::string(fullScaleSpeed(scale)) : std::string();
+                if (live && !fullScaleBuilt(scale))
+                    hint = fullScaleWhy(scale);
+                y += 42;
+                ui_.text(ui_.fit(hint, c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
+                y += 30;
+            }
+            y += ui_.wrap(note, c.x + 20, y, c.width - 40, 12.5f, ui::alpha(t.faint, 0.9f)) + 10;
             if (!live && dev)
-                fullui::notBuilt(ui_, c.x + 20, y + 4, c.width - 40, "the GT4 program here was not checked with GT4 at these sizes: it gets Native.");
+                fullui::notBuilt(ui_, c.x + 20, y, c.width - 40, "the GT4 program here was not checked with GT4 at these sizes: it gets Native.");
             // Texture smoothing GT4_TEX_SMOOTH (analysis/design/tex-smooth; moved here from Detail and textures, developer 2026-10-19:
             // it only works at 2x and above). A GT4 program without it (its marker, full_.texSmooth): greyed.
             {
@@ -648,19 +646,23 @@ namespace gt4stock
         // (Drawing and Effects resolution: on the Graphics tab now, developer 2026-10-19.)
         (void)fast;
         (void)leftBottom;
-        // Full screen / window, the monitor and the window's size (the Screen tab's Display card; developer 2026-10-19).
-        displayShape(x0 + colW + kGap, y0, x1, y1);
+        // (Full screen / window, the monitor and the window's size: the Screens page, developer 2026-10-30.)
+        (void)colW;
     }
 
     // ------------------------------------------------------------------ Screen shape
     // developer, 2026-10-09: "too much going on in that screen. i just want all the different ratios, then i want full screen,
     // windowed, boarderless windowed, display what monitors are connected". Two cards: the screen shape (the ratios) and the
     // display (full screen / borderless window / window, the monitors, a window's size), with one line on the black bars.
-    void App::displayShape(float x0, float y0, float x1, float y1)
+    // developer 2026-10-30: on the Screens page (gt4full_pages.cpp). One screen: full screen / borderless window / window, the
+    // monitor, a window's size, On this screen. Three screens: only the middle monitor (GT4.exe makes its own window over
+    // the three). Returns the Display card's bottom.
+    float App::displayShape(float x0, float y0, float x1, float y1)
     {
         const ui::Theme &t = ui::theme();
         FullSettings &f = st_.full;
         const bool dev = showUnbuilt_;
+        const bool three = f.mmMode == kMmThreeWide;
         const float cw = x1 - x0, lw = std::floor(std::min(500.0f, cw * 0.48f));
         (void)y1;
         // (The shapes moved to Resolution's card with the presets: developer 2026-10-19, "Display - Screen can probably shift to
@@ -676,31 +678,34 @@ namespace gt4stock
             const bool exclusiveLacks = full_.read && !full_.exclusive;
             const float rowH = 40;
             const size_t monRows = std::max<size_t>(1, std::min<size_t>(monitors_.size(), 4));
-            const float h = 52 + 46 + 16 + 20 + monRows * rowH + 10 + (st_.fullscreen ? 0 : 50) + 12;
+            const bool windowRow = !three && !st_.fullscreen;
+            const float h = 52 + (three ? 0 : 46 + 16 + 8) + 20 + monRows * rowH + 10 + (windowRow ? 50 : 0) + 12;
             const Rectangle c = R(rx, y0, rw, h);
-            fullui::card(ui_, c, "Display", {Pill::ClassicToo});
+            fullui::card(ui_, c, three ? "Middle monitor" : "Display", {Pill::ClassicToo});
             float y = c.y + 52;
-            // 0 full screen (GT3_FULLSCREEN=exclusive), 1 borderless window over the monitor (1), 2 a window (0), 3 one borderless
-            // window across all monitors (span; developer wanted it back, 2026-10-09).
-            int mode = !st_.fullscreen ? 2 : f.span ? 3 : f.exclusive ? 0 : 1;
-            if (ui_.segmented("screen-mode", R(c.x + 20, y, c.width - 40, 34), {"Full screen", "Borderless window", "Window", "Across all monitors"}, mode, true,
-                              12.5f))
+            if (!three)
             {
-                st_.fullscreen = mode != 2;
-                f.exclusive = mode == 0;
-                f.span = mode == 3;
-                markDirty();
+                // 0 full screen (GT3_FULLSCREEN=exclusive), 1 borderless window over the monitor (1), 2 a window (0). (Across
+                // all monitors, span, is gone: three screens is the mode above, developer 2026-10-30.)
+                int mode = !st_.fullscreen ? 2 : f.exclusive ? 0 : 1;
+                if (ui_.segmented("screen-mode", R(c.x + 20, y, c.width - 40, 34), {"Full screen", "Borderless window", "Window"}, mode, true, 12.5f))
+                {
+                    st_.fullscreen = mode != 2;
+                    f.exclusive = mode == 0;
+                    f.span = false;
+                    markDirty();
+                }
+                y += 46;
+                const char *modeHint = !st_.fullscreen ? "A normal window you can move and resize. Alt+Enter makes it full screen."
+                                       : f.exclusive  ? "GT4 takes over the monitor. Esc or Alt+Enter gives a window."
+                                                      : "A window without edges covering the whole monitor: quick to Alt+Tab. Esc leaves it.";
+                ui_.text(ui_.fit(modeHint, c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
+                if (f.exclusive && st_.fullscreen && exclusiveLacks)
+                    ui_.text(ui_.fit("This GT4 program has the borderless one only: Play gives it that.", c.width - 40, 12.5f), c.x + 20, y + 18, 12.5f, t.warn);
+                y += 16 + (f.exclusive && st_.fullscreen && exclusiveLacks ? 18 : 0) + 8;
             }
-            y += 46;
-            const char *modeHint = !st_.fullscreen ? "A normal window you can move and resize. Alt+Enter makes it full screen."
-                                   : f.span       ? "One window without edges over every monitor; the picture keeps its shape in the middle."
-                                   : f.exclusive  ? "GT4 takes over the monitor. Esc or Alt+Enter gives a window."
-                                                  : "A window without edges covering the whole monitor: quick to Alt+Tab. Esc leaves it.";
-            ui_.text(ui_.fit(modeHint, c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
-            if (f.exclusive && st_.fullscreen && !f.span && exclusiveLacks)
-                ui_.text(ui_.fit("This GT4 program has the borderless one only: Play gives it that.", c.width - 40, 12.5f), c.x + 20, y + 18, 12.5f, t.warn);
-            y += 16 + (f.exclusive && st_.fullscreen && !f.span && exclusiveLacks ? 18 : 0) + 8;
-            ui_.text("Monitor", c.x + 20, y, 12.5f, t.faint, Weight::Semibold);
+            ui_.text(three ? "The middle screen: the left and right ones are the monitors right next to it" : "Monitor", c.x + 20, y, 12.5f, t.faint,
+                     Weight::Semibold);
             y += 20;
             size_t shown = 0;
             for (const MonitorInfo &m : monitors_)
@@ -709,7 +714,7 @@ namespace gt4stock
                     break;
                 const Rectangle r = R(c.x + 12, y, c.width - 24, rowH - 4);
                 const bool sel = mon && mon->index == m.index;
-                if (ui_.rowButton("mon-" + std::to_string(m.index), r, sel, !(f.span && st_.fullscreen)))
+                if (ui_.rowButton("mon-" + std::to_string(m.index), r, sel, true))
                     pickMonitor(m.index);
                 ui_.ring(r.x + 18, r.y + r.height * 0.5f, 6.5f, 8.0f, sel ? t.accent : t.faint);
                 if (sel)
@@ -727,7 +732,7 @@ namespace gt4stock
                 y += rowH;
             }
             y += 10;
-            if (!st_.fullscreen)
+            if (windowRow)
             {
                 ui_.text("Window size", c.x + 20, y + 7, 14, t.text);
                 const auto sizes = windowSizes(mon);
@@ -750,8 +755,8 @@ namespace gt4stock
             // On this screen (developer kept it, 2026-10-09): the screen or window in black, the race picture on it, its size and bars;
             // when there is room for it below the Display card.
             const float cy = c.y + c.height + kGap;
-            if (y1 - cy < 170.0f)
-                return;
+            if (three || y1 - cy < 170.0f)
+                return c.y + c.height;
             const Rectangle oc = R(rx, cy, rw, std::min(230.0f, y1 - cy));
             ui_.card(oc, "On this screen");
             const float dh = oc.height - 70, dw = std::min(dh * static_cast<float>(ww) / std::max(1, wh), std::min(280.0f, rw * 0.4f));
@@ -775,6 +780,7 @@ namespace gt4stock
                                          : strf("Black bars %d px at the sides and %d px above and below%s.", bx, by,
                                                 st_.linesOn ? " (with the TV scanlines on the picture keeps a whole number of screen rows per line)" : ""),
                      tx, ty, tw, 12.5f, t.muted);
+            return c.y + c.height;
         }
     }
 
@@ -792,32 +798,27 @@ namespace gt4stock
         float gBottom = y0;
         // Renderer: Automatic (Vulkan on an NVIDIA or AMD card, OpenGL on any other), Vulkan or OpenGL (GT3_RENDERER auto / vk / gl;
         // a GT4 program without the choice, !full_.rendererAuto, draws with Vulkan and the others are greyed).
+        // (Renderer, Drawing and Effects resolution are dropdowns with the choice's hint under them: developer 2026-10-30, "utilize
+        // drop downs in some menus to not make them look so clutered, especially ... the display tab".)
+        const float kRendererH = 258;
         {
-            const float h = 290;
+            const float h = kRendererH;
             const Rectangle c = R(x0, y0, colW, h);
             fullui::card(ui_, c, "Renderer", {Pill::Full});
             float y = c.y + 48;
             const bool choice = !full_.read || full_.rendererAuto;
-            const int chosen = choice ? std::clamp(f.renderer, 0, 2) : 1;
-            if (fullui::radio(ui_, "renderer-auto", R(c.x + 10, y, c.width - 20, 32), chosen == 0, "Automatic", "Vulkan on NVIDIA and AMD, OpenGL on other cards", choice))
+            int chosen = choice ? std::clamp(f.renderer, 0, 2) : 1;
+            static const char *const hints[3] = {"Vulkan on NVIDIA and AMD, OpenGL on other cards", "GT4's main renderer",
+                                                 "for cards where Vulkan has trouble (no shaders to prepare)"};
+            ui_.text("Renderer", c.x + 20, y + 8, 14, choice ? t.text : t.faint);
+            if (ui_.dropdown("renderer", R(c.x + c.width - 20 - 220, y, 220, 34), {"Automatic", "Vulkan", "OpenGL"}, chosen, choice))
             {
-                f.renderer = 0;
+                f.renderer = chosen;
                 markDirty();
             }
-            y += 34;
-            if (fullui::radio(ui_, "renderer-vk", R(c.x + 10, y, c.width - 20, 32), chosen == 1, "Vulkan", "GT4's main renderer", choice))
-            {
-                f.renderer = 1;
-                markDirty();
-            }
-            y += 34;
-            if (fullui::radio(ui_, "renderer-gl", R(c.x + 10, y, c.width - 20, 32), chosen == 2, "OpenGL",
-                              choice ? "for cards where Vulkan has trouble (no shaders to prepare)" : "not in this GT4 program", choice))
-            {
-                f.renderer = 2;
-                markDirty();
-            }
-            y += 40;
+            y += 42;
+            ui_.text(ui_.fit(choice ? hints[chosen] : "This GT4 program draws with Vulkan only.", c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
+            y += 30;
             // Prepare shaders is for Vulkan: greyed with OpenGL chosen.
             const bool vk = (!full_.read || full_.vulkan) && chosen != 2;
             ui_.text("Prepare shaders", c.x + 20, y, 15, t.text, Weight::Semibold);
@@ -866,8 +867,9 @@ namespace gt4stock
         const bool offeredNow = resLive && fullScaleBuilt(scale);
         const int given = offeredNow ? scale : 1;
         const bool fast = fullDrawingFast(given, f.drawing);
+        const float kDrawingH = 48 + 34 + 8 + 18 + 8 + 30 + 12;
         {
-            const Rectangle c = R(x0, y0 + 290 + kGap, colW, 48 + 2 * 34 + 10 + 30 + 12);
+            const Rectangle c = R(x0, y0 + kRendererH + kGap, colW, kDrawingH);
             if (resLive)
                 fullui::card(ui_, c, "Drawing", {Pill::Full});
             else
@@ -883,17 +885,16 @@ namespace gt4stock
             static const Choice choices[] = {{1, "Exact", "the PS2's blending, exact for every pixel"},
                                              {2, "Fast", "the graphics card's own blending: tiny differences, quicker"}};
             const int shownDrawing = f.drawing == 1 || f.drawing == 2 ? f.drawing : (fast ? 2 : 1);
-            for (const Choice &ch : choices)
+            int dsel = shownDrawing == 2 ? 1 : 0;
+            ui_.text("Blending", c.x + 20, y + 8, 14, resLive ? t.text : t.faint);
+            if (ui_.dropdown("drawing", R(c.x + c.width - 20 - 220, y, 220, 34), {choices[0].label, choices[1].label}, dsel, resLive))
             {
-                if (fullui::radio(ui_, strf("drawing-%d", ch.value), R(c.x + 10, y, c.width - 20, 32), shownDrawing == ch.value, ch.label, ch.hint,
-                                  resLive, !resLive && dev))
-                {
-                    f.drawing = ch.value;
-                    markDirty();
-                }
-                y += 34;
+                f.drawing = choices[dsel].value;
+                markDirty();
             }
-            y += 10;
+            y += 42;
+            ui_.text(ui_.fit(choices[dsel].hint, c.width - 40, 12.5f), c.x + 20, y, 12.5f, t.faint);
+            y += 26;
             const std::string now = given != scale ? strf("%s is not offered yet: GT4 draws at Native, exactly.", fullScaleLabel(scale))
                                     : scale <= 1   ? std::string("At Native GT4 always draws exactly; this choice applies at 2\xc3\x97 and above.")
                                                    : strf("Now: %s, %s.", fullScaleLabel(scale), fast ? "fast" : "exact");
@@ -902,7 +903,7 @@ namespace gt4stock
             if (offeredNow && !fast && *fullScaleExactSpeed(scale))
                 ui_.text(ui_.fit(fullScaleExactSpeed(scale), c.width - 40, 12.5f), c.x + 20, y + 2, 12.5f, t.warn);
         }
-        gBottom = displayCars(x0, y0 + 290 + kGap + 48 + 2 * 34 + 10 + 30 + 12 + kGap, colW);
+        gBottom = displayCars(x0, y0 + kRendererH + kGap + kDrawingH + kGap, colW);
         float frBottom = y0;
         // Frame rate: the FPS counter, Off / Simple / Detailed with the detailed stats ticked (GT4_FPS_COUNTER, GT4_FPS_STATS;
         // a GT4 program without it gets nothing and the choice is greyed; Test Build 5's GT4.exe has on / off only: Simple and
@@ -915,7 +916,9 @@ namespace gt4stock
                                       "detailed.";
             const float ih = ui_.wrapHeight(intro, cc.width - 40, 12.5f);
             const int rows = (kFullFpsStatCount + 1) / 2;
-            const float h = 54 + 26 + 40 + ih + 10 + 24 + rows * 28.0f + 12 + 26 + 4;
+            // The stats' ticks only while Detailed is chosen (developer 2026-10-30: less clutter).
+            const bool showTicks = std::clamp(f.fpsCounter, 0, 2) == 2;
+            const float h = 54 + 26 + 40 + ih + 10 + (showTicks ? 24 + rows * 28.0f + 12 : 0.0f) + 26 + 4;
             const Rectangle c = R(cc.x, y0, cc.width, h);
             frBottom = c.y + c.height;
             fullui::card(ui_, c, "Frame rate", {Pill::Full});
@@ -933,21 +936,25 @@ namespace gt4stock
             y += 40;
             y += ui_.wrap(intro, c.x + 20, y, c.width - 40, 12.5f, ui::alpha(t.faint, 0.85f)) + 10;
             const bool ticks = fpsLive && statsLive && f.fpsCounter == 2;
-            ui_.text("Detailed shows", c.x + 20, y, 13.5f, ticks ? t.text : t.faint, Weight::Semibold);
-            y += 24;
-            const float colX[2] = {c.x + 20, c.x + 20 + std::floor((c.width - 40) * 0.5f)};
-            for (int i = 0; i < kFullFpsStatCount; ++i)
+            if (showTicks)
             {
-                bool on = (f.fpsStats >> i) & 1;
-                if (ui_.checkbox(std::string("fps-stat-") + kFullFpsStatKeys[i], colX[i / rows], y + static_cast<float>(i % rows) * 28.0f, on, kFullFpsStatLabels[i], ticks))
+                ui_.text("Detailed shows", c.x + 20, y, 13.5f, ticks ? t.text : t.faint, Weight::Semibold);
+                y += 24;
+                const float colX[2] = {c.x + 20, c.x + 20 + std::floor((c.width - 40) * 0.5f)};
+                for (int i = 0; i < kFullFpsStatCount; ++i)
                 {
-                    f.fpsStats ^= 1 << i;
-                    if ((f.fpsStats & 0x7FF) == 0)
-                        f.fpsStats = 1; // at least one: frames per second
-                    markDirty();
+                    bool on = (f.fpsStats >> i) & 1;
+                    if (ui_.checkbox(std::string("fps-stat-") + kFullFpsStatKeys[i], colX[i / rows], y + static_cast<float>(i % rows) * 28.0f, on, kFullFpsStatLabels[i],
+                                     ticks))
+                    {
+                        f.fpsStats ^= 1 << i;
+                        if ((f.fpsStats & 0x7FF) == 0)
+                            f.fpsStats = 1; // at least one: frames per second
+                        markDirty();
+                    }
                 }
+                y += rows * 28.0f + 12;
             }
-            y += rows * 28.0f + 12;
             std::string note = "CPU and GPU load: the whole PC and GT4's share. RAM and VRAM: GT4's and the PC's.";
             Color nc = ui::alpha(t.faint, 0.85f);
             if (!fpsLive)
@@ -969,34 +976,45 @@ namespace gt4stock
             const char *note = "GT4's glow, light and reflection effects drawn smaller than the picture: lighter work for the graphics card, a "
                                "little softer glow. Cars, track and text stay sharp.";
             const float w = cw - colW - kGap;
-            const float h = 48 + 2 * 38 + 6 + ui_.wrapHeight(note, w - 40, 12.5f) + 14;
+            const float h = 48 + 34 + 8 + 18 + 8 + ui_.wrapHeight(note, w - 40, 12.5f) + 14;
             const Rectangle c = R(x0 + colW + kGap, frBottom + kGap, w, h);
             fullui::card(ui_, c, "Effects resolution", {Pill::Full});
-            const int choice = f.effectsScale;
-            const float bw = std::floor((c.width - 20 - 8) / 2.0f);
-            for (int i = 0; i < 4; ++i)
-            {
-                const int value = i == 0 ? 0 : i + 1; // Normal, 2x, 3x, 4x
-                const bool offered = resLive && (value == 0 || value <= given);
-                const std::string label = value == 0 ? std::string("Normal") : strf("%d\xc3\x97", value);
-                const std::string hint = value == 0        ? std::string("as the picture")
-                                         : value < given ? std::string("smaller than the picture")
-                                         : value == given ? std::string("as Normal")
-                                                          : std::string("bigger: as Normal");
-                if (fullui::radio(ui_, strf("effects-res-%d", value), R(c.x + 10 + (i % 2) * (bw + 8), c.y + 48 + (i / 2) * 38, bw, 32), choice == value, label, hint,
-                                  offered, false))
+            // Normal, then 2x / 3x / 4x up to the picture's own (a bigger one would be as Normal: not offered).
+            std::vector<int> values{0};
+            std::vector<std::string> labels{"Normal"};
+            int sel = 0;
+            for (int v = 2; v <= 4; ++v)
+                if (resLive && v <= given)
                 {
-                    f.effectsScale = value;
-                    markDirty();
+                    if (f.effectsScale == v)
+                        sel = static_cast<int>(values.size());
+                    values.push_back(v);
+                    labels.push_back(strf("%d\xc3\x97", v));
                 }
+            const int value = values[static_cast<size_t>(sel)];
+            ui_.text("Effects size", c.x + 20, c.y + 48 + 8, 14, t.text);
+            if (ui_.dropdown("effects-res", R(c.x + c.width - 20 - 220, c.y + 48, 220, 34), labels, sel, resLive))
+            {
+                f.effectsScale = values[static_cast<size_t>(sel)];
+                markDirty();
             }
-            ui_.wrap(note, c.x + 20, c.y + 48 + 76 + 6, c.width - 40, 12.5f, ui::alpha(t.faint, 0.9f));
+            const std::string hint = value == 0 ? std::string("Normal: as the picture") : value < given ? strf("%d\xc3\x97: smaller than the picture", value)
+                                                                                                         : strf("%d\xc3\x97: as Normal", value);
+            ui_.text(ui_.fit(hint, c.width - 40, 12.5f), c.x + 20, c.y + 48 + 42, 12.5f, t.faint);
+            ui_.wrap(note, c.x + 20, c.y + 48 + 34 + 8 + 18 + 8, c.width - 40, 12.5f, ui::alpha(t.faint, 0.9f));
             gBottom = std::max(gBottom, c.y + c.height);
         }
         ui_.endScroll("graphics", gBottom + gOff - gTop + 8);
     }
 
-    // ------------------------------------------------------------------ Cameras (full-m2, Cameras and MoreCams)
+    // ------------------------------------------------------------------ Race cameras (full-m2, Cameras and MoreCams)
+    // Driving > Race cameras (developer 2026-10-30: "shift cameras to under the driving section"; was Display > Cameras).
+    void App::pageRaceCameras()
+    {
+        drawHeader("Race cameras", "The views the view button goes through, their tilt and the 360 look. Changes are saved as you make them.");
+        displayCameras(kSidebarW + 32, kTop, ui_.width - 32, ui_.height - 48);
+    }
+
     void App::displayCameras(float x0, float y0, float x1, float y1)
     {
         const ui::Theme &t = ui::theme();
@@ -1013,8 +1031,8 @@ namespace gt4stock
         {
             static const char *const names[6] = {"Bumper", "Bonnet", "Roof", "Close chase", "Chase", "Far chase"};
             static const char *const notes[6] = {"GT4's own, from the front of the car.",
-                                                 "GT4's own, over the bonnet.",
-                                                 "Higher and further back than the bonnet: over the roof.",
+                                                 "On the bonnet, just in front of the windscreen.",
+                                                 "GT4's own bonnet camera (it sits at roof height).",
                                                  "Nearer and a little higher than GT4's chase view.",
                                                  "GT4's own chase view.",
                                                  "1.5 times as far back and as high as GT4's chase view."};
@@ -1118,6 +1136,56 @@ namespace gt4stock
             y += 14;
             for (const auto &l : lines)
                 y += ui_.wrap(l.first, c.x + 20, y, c.width - 40, 13, l.second) + 12;
+
+            // Bonnet camera (Build 69, developer 2026-10-31: "i want it like forza motorsports 4 bonnet view ... can we tune it
+            // ourselves?"): the Bonnet view's camera from GT4's bonnet eye (GT4_CAM_BONNET). While GT4 runs the values go to
+            // camera-live.txt beside GT4.exe and GT4 takes them in at once (gt4cam::pollBonnetLive).
+            const std::string bonnetHint = "Moves the Bonnet view's camera (the 2nd view). Up/down and forward/back are from GT4's own "
+                                           "bonnet camera; tilt points it down. Works while GT4 is running: switch to the Bonnet view and "
+                                           "drag. The same for every car.";
+            const float bh = 54 + ui_.wrapHeight(bonnetHint, rw - 40, 12.5f) + 12 + 3 * 34 + 44 + 14;
+            const Rectangle b = R(rx, c.y + c.height + kGap, rw, bh);
+            fullui::card(ui_, b, "Bonnet camera", {Pill::Full});
+            float by = b.y + 54;
+            by += ui_.wrap(bonnetHint, b.x + 20, by, b.width - 40, 12.5f, ui::alpha(t.faint, 0.85f)) + 12;
+            const float sw = b.width - 40;
+            auto row = [&](const char *id, const char *label, int &value, int lo, int hi, const std::string &shown) {
+                ui_.text(label, b.x + 20, by + 6, 13.5f, t.faint);
+                float v = static_cast<float>(value);
+                if (ui_.slider(id, R(b.x + 170, by, sw - 280, 28), v, static_cast<float>(lo), static_cast<float>(hi), 1.0f, !moreLacks))
+                {
+                    value = static_cast<int>(std::lround(v));
+                    markDirty();
+                }
+                ui_.text(shown, b.x + 20 + sw, by + 6, 13.5f, t.text, Weight::Semibold, Align::Right);
+                by += 34;
+            };
+            row("bonnet-up", "Up / down", f.camBonnetUp, FullSettings::kCamBonnetUpMin, FullSettings::kCamBonnetUpMax,
+                f.camBonnetUp == 0 ? std::string("as GT4's") : strf("%+d cm", f.camBonnetUp));
+            row("bonnet-back", "Forward / back", f.camBonnetBack, FullSettings::kCamBonnetBackMin, FullSettings::kCamBonnetBackMax,
+                f.camBonnetBack == 0 ? std::string("as GT4's") : (f.camBonnetBack < 0 ? strf("%d cm forward", -f.camBonnetBack) : strf("%d cm back", f.camBonnetBack)));
+            row("bonnet-down", "Tilt down", f.camBonnetDown, FullSettings::kCamBonnetDownMin, FullSettings::kCamBonnetDownMax, strf("%d\xc2\xb0", f.camBonnetDown));
+            const FullSettings standard;
+            const bool atDefault = f.camBonnetUp == standard.camBonnetUp && f.camBonnetBack == standard.camBonnetBack && f.camBonnetDown == standard.camBonnetDown;
+            if (ui_.button("bonnet-reset", R(b.x + 20, by + 4, 200, 30), "Reset bonnet camera", Style::Secondary, !atDefault, 12.5f))
+            {
+                f.camBonnetUp = standard.camBonnetUp;
+                f.camBonnetBack = standard.camBonnetBack;
+                f.camBonnetDown = standard.camBonnetDown;
+                markDirty();
+            }
+            // The live link for a running GT4.
+            const std::string liveLine = strf("GT4_CAM_BONNET=%.2f,%.2f,%d\n", f.camBonnetUp / 100.0, f.camBonnetBack / 100.0, f.camBonnetDown);
+            if (liveLine != cameraLiveWritten_ && !hidden_) // (never in the hidden test mode)
+            {
+                cameraLiveWritten_ = liveLine;
+                const fs::path gt4Dir = inst_.exeFound ? inst_.exe.parent_path() : inst_.root;
+                if (FILE *lf = std::fopen((gt4Dir / "camera-live.txt").string().c_str(), "w"))
+                {
+                    std::fputs(liveLine.c_str(), lf);
+                    std::fclose(lf);
+                }
+            }
         }
     }
 

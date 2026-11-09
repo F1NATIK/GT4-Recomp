@@ -163,6 +163,7 @@ namespace vkgl
             VkDeviceMemory dedicatedMemory = VK_NULL_HANDLE;
             uint8_t *mapped = nullptr;
             VkDeviceSize size = 0;
+            uint64_t sliceCmdCalls = UINT64_MAX; // g->cmdCalls when the slice was allocated (see Context::cmdCalls)
             VkBuffer handle() const { return dedicated ? dedicated : slice.buffer; }
             VkDeviceSize base() const { return dedicated ? 0 : slice.offset; }
             uint8_t *data() const { return dedicated ? mapped : slice.ptr; }
@@ -319,6 +320,9 @@ namespace vkgl
             bool recording = false;
             uint64_t serial = 1;    // the command buffer being recorded (or the next one)
             uint64_t completed = 0; // every command buffer up to this serial has finished
+            // cmd() calls so far: every recorded command goes through cmd(), so a buffer slice allocated when this
+            // count was N is in no recorded command while it is still N (BufferSubData may then write in place).
+            uint64_t cmdCalls = 0;
             std::vector<std::pair<uint64_t, std::function<void()>>> deferred;
 
             std::vector<std::unique_ptr<Chunk>> chunks;
@@ -503,6 +507,7 @@ namespace vkgl
 
         VkCommandBuffer cmd()
         {
+            ++g->cmdCalls;
             if (!g->recording)
             {
                 Frame &f = g->frames[g->frameIndex];
@@ -3237,11 +3242,12 @@ layout(set = 1, binding = 1) uniform sampler vkgl_samplers[4];
             // only at the read; at the developer's settings dropped VSyncs 516-533 -> 455
             // there, New York 18 -> 8. The same commands in the same order on one
             // queue, only submitted earlier: the picture is the same.
-#if defined(PS2X_GAME_GT3)
+            // Off again by default since 2026-10-31 (analysis/design/triple-60fps/GS_GL-PROFILE.md): on the
+            // main PC (RX 9070 XT, 4x) the many small submissions cost more than they saved. Angled triples,
+            // Autumn Ring Mini: 49.4-51.9 -> 55.2-55.9 fps, slow 5-s windows 28-32 -> 14-15 of 32; the night
+            // course: one screen 56.9 -> 57.7 fps (23 -> 12 slow windows), triples 58.2 -> 58.4. Menu frames
+            // bit-identical. GT3_VKGL_IDLE_SUBMIT=1: on.
             static const bool idleSubmit = std::getenv("GT3_VKGL_IDLE_SUBMIT") && std::strcmp(std::getenv("GT3_VKGL_IDLE_SUBMIT"), "1") == 0;
-#else
-            static const bool idleSubmit = !(std::getenv("GT3_VKGL_IDLE_SUBMIT") && std::strcmp(std::getenv("GT3_VKGL_IDLE_SUBMIT"), "0") == 0);
-#endif
             if (idleSubmit && ++g->cbDraws >= 4 && (g->cbDraws & 3) == 0)
             {
                 const Frame &last = g->frames[(g->frameIndex + g->frameCount - 1) % g->frameCount];
@@ -3901,6 +3907,7 @@ layout(set = 1, binding = 1) uniform sampler vkgl_samplers[4];
             ++s.chunk->refs;
             b.slice = s;
             b.size = size;
+            b.sliceCmdCalls = g->cmdCalls;
         }
     }
 
@@ -3922,11 +3929,52 @@ layout(set = 1, binding = 1) uniform sampler vkgl_samplers[4];
             std::memcpy(b->mapped + offset, data, static_cast<size_t>(size));
             return;
         }
+        // GT3_GS_GL_FAST_FALLBACK=1 (off by default until its proof run, Build 73): with no command recorded since this
+        // slice was allocated (glBufferData just orphaned it), nothing can read the old contents, so the range is
+        // written in place (a whole-buffer copy per call was 87% of the GS GL thread on Tokyo R246 when batches
+        // overflowed 8 MB upload-ring regions).
+        // GT3_VKGL_SUBDATA_CHECK=1 (diagnostic, the proof run; implies the fast path's test): such a write is copied as
+        // before, and then the slice it would have written in place is filled with 0xFF (NaN floats, wild indices): if
+        // any recorded command still read that slice, the picture (GT3_GS_COMPARE) would show it in the same run.
+        static const bool fast = [] {
+            const char *v = std::getenv("GT3_GS_GL_FAST_FALLBACK");
+            return v && *v == '1';
+        }();
+        static const bool check = [] {
+            const char *v = std::getenv("GT3_VKGL_SUBDATA_CHECK");
+            return v && *v == '1';
+        }();
+        // Exact counts: the totals, logged at the first call and then at most every 10 s while calls continue.
+        static uint64_t inPlace = 0, copied = 0;
+        static auto lastLog = std::chrono::steady_clock::time_point{};
+        bool poison = false;
+        const bool candidate = (fast || check) && b->slice.ptr && b->sliceCmdCalls == g->cmdCalls && offset >= 0 &&
+                               static_cast<VkDeviceSize>(offset) + static_cast<VkDeviceSize>(size) <= b->size;
+        ++(candidate ? inPlace : copied);
+        if (const auto now = std::chrono::steady_clock::now(); inPlace + copied == 1u || now - lastLog >= std::chrono::seconds(10))
+        {
+            lastLog = now;
+            std::fprintf(stderr, "[vkgl] BufferSubData totals: %llu in place, %llu copied (fast fallback %s%s)\n",
+                         static_cast<unsigned long long>(inPlace), static_cast<unsigned long long>(copied), fast ? "on" : "off",
+                         check ? ", in-place ones copied and poisoned: GT3_VKGL_SUBDATA_CHECK=1" : "");
+        }
+        if (candidate)
+        {
+            if (!check)
+            {
+                std::memcpy(b->slice.ptr + offset, data, static_cast<size_t>(size));
+                return;
+            }
+            poison = true;
+        }
         // Draws recorded before read the old contents: copy into new storage.
         const Slice old = b->slice;
+        const VkDeviceSize oldSize = b->size;
         respecify(*b, b->size, nullptr, b->size);
         if (b->slice.ptr && b->slice.ptr != old.ptr)
             std::memcpy(b->slice.ptr + offset, data, static_cast<size_t>(size));
+        if (poison && old.ptr && b->slice.ptr != old.ptr)
+            std::memset(old.ptr, 0xFF, static_cast<size_t>(oldSize));
     }
 
     namespace
@@ -3936,11 +3984,32 @@ layout(set = 1, binding = 1) uniform sampler vkgl_samplers[4];
             Buffer *b = g->buffers.get(g->genericBuffer);
             if (!b)
                 return;
+            uint32_t type = UINT32_MAX;
             if (!makeBuffer(static_cast<VkDeviceSize>(size), kStreamUsage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, b->dedicated, b->dedicatedMemory, &b->mapped))
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, b->dedicated, b->dedicatedMemory, &b->mapped, &type))
             {
                 std::fprintf(stderr, "[vkgl] glBufferStorage of %lld bytes failed\n", static_cast<long long>(size));
                 return;
+            }
+            // A big buffer (the GS upload ring at 4 x 32 MB) only in a heap with room to spare: not the 256 MB
+            // host-visible window of a GPU without resizable BAR (the caller then asks for less).
+            if (size >= (GLsizeiptr{64} << 20) && type < dev->memory.memoryTypeCount)
+            {
+                const VkMemoryHeap &heap = dev->memory.memoryHeaps[dev->memory.memoryTypes[type].heapIndex];
+                const bool room = heap.size >= (VkDeviceSize{1} << 30);
+                std::fprintf(stderr, "[vkgl] glBufferStorage %lld MB: memory type %u, heap %u of %llu MB%s%s\n", static_cast<long long>(size >> 20), type,
+                             dev->memory.memoryTypes[type].heapIndex, static_cast<unsigned long long>(heap.size >> 20),
+                             (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " (device-local)" : "", room ? "" : ": too small, refused");
+                if (!room)
+                {
+                    vkUnmapMemory(vk, b->dedicatedMemory);
+                    vkDestroyBuffer(vk, b->dedicated, nullptr);
+                    vkFreeMemory(vk, b->dedicatedMemory, nullptr);
+                    b->dedicated = VK_NULL_HANDLE;
+                    b->dedicatedMemory = VK_NULL_HANDLE;
+                    b->mapped = nullptr;
+                    return;
+                }
             }
             b->size = static_cast<VkDeviceSize>(size);
             if (data)
@@ -4805,7 +4874,8 @@ layout(set = 1, binding = 1) uniform sampler vkgl_samplers[4];
         {
             // A slot neither shown nor the newest; its drawing waits for the
             // host's last reads of it.
-            const int width = 640 * gsgl::presentScale(), rows = static_cast<int>(gsgl::presentRows()) * gsgl::presentScaleY();
+            // (gsgl::presentWide: GT4's angled triple screens, three pictures side by side)
+            const int width = 640 * gsgl::presentScale() * gsgl::presentWide(), rows = static_cast<int>(gsgl::presentRows()) * gsgl::presentScaleY();
             uint64_t hostWait = 0;
             const int s = gsvk::present::rendererSlot(hostWait);
             Context::PresentImage &pi = g->present[s];

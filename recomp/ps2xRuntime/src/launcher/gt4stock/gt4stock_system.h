@@ -97,4 +97,15 @@ namespace gt4stock::sys
         std::string label() const; // About's Graphics row: "<adapter> (game)" or "chosen by Windows"
     };
     GpuChoice gameGpu(const fs::path &exe);
+
+    // A monitor's own description (its EDID, as Windows keeps it in the registry for the display that covers the
+    // desktop point x, y): its maker's three-letter id, its model name, and its picture's size in mm (the first detailed
+    // timing; 0 when it gives none). Read only; nothing online.
+    struct MonitorSpec
+    {
+        bool ok = false;
+        std::string maker, model, why; // why: what failed when !ok
+        int widthMm = 0, heightMm = 0;
+    };
+    MonitorSpec monitorSpec(int x, int y);
 }

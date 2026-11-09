@@ -395,6 +395,9 @@ namespace gt4stock
                 const int b = std::clamp(w.buttons[i], 0, kWheelButtonNames - 1);
                 lines.push_back(strf("button %zu %s", i, kWheelButtonKeys[b]));
             }
+        for (size_t i = 0; i < w.shifterButtons.size(); ++i)
+            if (w.shifterButtons[i] > 0 && w.shifterButtons[i] < kWheelButtonNames)
+                lines.push_back(strf("shifter-button %zu %s", i, kWheelButtonKeys[w.shifterButtons[i]]));
         static const char *const effectNames[4] = {"constant", "spring", "damper", "friction"};
         std::vector<std::string> effects;
         for (int e = 0; e < 4; ++e)
@@ -482,12 +485,12 @@ namespace gt4stock
                     ok = true;
                 }
             }
-            else if (key == "button" && t.size() == 3 && parseInt(t[1], n) && n >= 0 && n <= 127)
+            else if ((key == "button" || key == "shifter-button") && t.size() == 3 && parseInt(t[1], n) && n >= 0 && n <= 127)
             {
                 const int b = wheelButtonIndex(t[2]);
                 ok = b >= 0;
                 if (ok)
-                    next.buttons[static_cast<size_t>(n)] = b;
+                    (key == "button" ? next.buttons : next.shifterButtons)[static_cast<size_t>(n)] = b;
             }
             else if (key == "ffb-effects" && t.size() == 2)
             {
@@ -551,7 +554,7 @@ namespace gt4stock
             "GT4_DISC_IMAGE", "GT3_DISPLAY_FILTER", "GT3_CRT_SCANLINES", "GT4_PICTURE_FIT", "GT4_SCANLINE_FIELD",
             "GT4_PICTURE_FILTER", "GT4_DEINTERLACE",
             "GT3_FULLSCREEN", "GT3_WINDOW_SIZE", "GT4_MONITOR", "GT3_VIBRATION", "PS2X_INPUT", "PS2X_WHEEL",
-            "PS2X_WHEEL_DEVICE", "PS2X_WHEEL_PEDALS", "PS2X_WHEEL_MODEL", "PS2X_WHEEL_ROTATION", "PS2X_WHEEL_STEER_INVERT",
+            "PS2X_WHEEL_DEVICE", "PS2X_WHEEL_PEDALS", "PS2X_WHEEL_SHIFTER", "PS2X_WHEEL_MODEL", "PS2X_WHEEL_ROTATION", "PS2X_WHEEL_STEER_INVERT",
             "PS2X_WHEEL_FFB", "PS2X_WHEEL_FFB_GAIN", "PS2X_WHEEL_FFB_INVERT", "PS2X_WHEEL_LINES", "GT4_MC0", "GT4_MC1", "GT4_USB", "GT4_USB_ROOT",
             "GT4_EYETOY", "GT4L_PREVIEW", "GT4L_EXE", "GT4L_LAST_PLAYED", "GT4L_LAST_EXIT", "GT4L_LAST_MINUTES", "GT4L_FFB_ABOVE_CAP",
             "GT4L_WHEEL_NAME", "GT4L_PEDALS_NAME", "GT4L_EYETOY", "GT4L_EYETOY_CAMERA",
@@ -747,6 +750,8 @@ namespace gt4stock
                 s.wheel.device = trim(value).empty() ? "auto" : trim(value);
             else if (key == "PS2X_WHEEL_PEDALS")
                 s.wheel.pedals = trim(value).empty() ? "wheel" : trim(value);
+            else if (key == "PS2X_WHEEL_SHIFTER")
+                s.wheel.shifter = trim(value).empty() ? "none" : trim(value);
             else if (key == "PS2X_WHEEL_MODEL")
             {
                 const std::string v = lower(trim(value));
@@ -881,6 +886,8 @@ namespace gt4stock
                 s.wheel.deviceName = trim(value);
             else if (key == "GT4L_PEDALS_NAME")
                 s.wheel.pedalsName = trim(value);
+            else if (key == "GT4L_SHIFTER_NAME")
+                s.wheel.shifterName = trim(value);
             // ---- 1.4: player 2 (the player-2 runtime's GT4_PAD2, read with its own rules header)
             else if (key == "GT4_PAD2")
             {
@@ -1122,6 +1129,8 @@ namespace gt4stock
             line("# PS2X_WHEEL=dinput");
         kv("PS2X_WHEEL_DEVICE", s.wheel.device.empty() ? "auto" : s.wheel.device);
         kv("PS2X_WHEEL_PEDALS", s.wheel.pedals.empty() ? "wheel" : s.wheel.pedals);
+        line("# a shifter on its own USB cable (its buttons: shifter-button lines below), or none");
+        kv("PS2X_WHEEL_SHIFTER", s.wheel.shifter.empty() ? "none" : s.wheel.shifter);
         kv("PS2X_WHEEL_MODEL", s.wheel.model);
         kv("PS2X_WHEEL_ROTATION", std::to_string(s.wheel.rotation));
         kv("PS2X_WHEEL_STEER_INVERT", s.wheel.steerInvert ? "1" : "0");
@@ -1218,6 +1227,8 @@ namespace gt4stock
             kv("GT4L_WHEEL_NAME", s.wheel.deviceName);
         if (!s.wheel.pedalsName.empty())
             kv("GT4L_PEDALS_NAME", s.wheel.pedalsName);
+        if (!s.wheel.shifterName.empty())
+            kv("GT4L_SHIFTER_NAME", s.wheel.shifterName);
         if (s.eyetoy == EyeToy::Webcam && s.eyetoyIndex < 0)
             kv("GT4L_EYETOY", "webcam");
         if (s.eyetoy == EyeToy::Webcam && !s.eyetoyCamera.empty())

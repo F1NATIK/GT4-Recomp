@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/pdicdvd_resident.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/native_library.h"
 #include <algorithm>
 #include <atomic>
@@ -140,7 +141,7 @@ struct PdicdvdResident::State {
         uint32_t normalized=0;
         const uint32_t dmaBytes=(requested+15u)&~15u;
         if (!destination || !host.normalizeGuestAddress(destination,normalized) ||
-            normalized>=0x2000000 || (normalized&15u) || dmaBytes>0x2000000-normalized) return fail("invalid EE destination");
+            normalized>=kEeRamBytes || (normalized&15u) || dmaBytes>kEeRamBytes-normalized) return fail("invalid EE destination");
         std::array<uint32_t,2> config{};
         if (!host.readIopMemory(image+0x129c,config.data(),sizeof(config))) return fail("disc identity snapshot failed");
         const auto allocate=registry->bind("libpdi",0x10a,11),release=registry->bind("libpdi",0x10a,14);
@@ -342,9 +343,9 @@ RpcResult PdicdvdResident::handleRpc(const RpcRequest& request) {
         uint32_t dest=0,receive=0;
         const uint32_t bytes=word(job.bytes,4);
         if (request.send.size!=16 || request.receive.size>0x40 || !bytes || bytes>0x20000 ||
-            !s.host.normalizeGuestAddress(word(job.bytes,8),dest) || dest>=0x2000000 ||
-            !s.host.normalizeGuestAddress(request.receive.address,receive) || receive>=0x2000000 ||
-            request.receive.size>0x2000000-receive || ((bytes+15u)&~15u)>0x2000000-dest ||
+            !s.host.normalizeGuestAddress(word(job.bytes,8),dest) || dest>=kEeRamBytes ||
+            !s.host.normalizeGuestAddress(request.receive.address,receive) || receive>=kEeRamBytes ||
+            request.receive.size>kEeRamBytes-receive || ((bytes+15u)&~15u)>kEeRamBytes-dest ||
             (uint64_t(dest)<uint64_t(receive)+request.receive.size && uint64_t(receive)<uint64_t(dest)+((bytes+15u)&~15u))) return rejected();
     }
     { std::lock_guard lock(s.mutex); if (s.busy || !s.initialized()) return rejected(); s.busy=true; }

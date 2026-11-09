@@ -67,6 +67,8 @@ namespace gt4stock
         std::error_code ec;
         if (!opt_.root.empty())
             in.root = fs::absolute(opt_.root, ec);
+        else if (fs::is_regular_file(in.launcherDir / "build-kit" / "gt4setup.exe", ec))
+            in.root = in.launcherDir; // a release (its build-kit beside it): its own folder, never another GT4 above it
         else
         {
             // The launcher's folder (a package), or a folder above it (the
@@ -298,7 +300,7 @@ namespace gt4stock
                 tm.tm_min = std::stoi(n.substr(21, 2));
                 tm.tm_sec = std::stoi(n.substr(24, 2));
                 tm.tm_isdst = -1;
-                b.time = std::chrono::clock_cast<fs::file_time_type::clock>(std::chrono::system_clock::from_time_t(std::mktime(&tm)));
+                b.time = toFileTime(std::chrono::system_clock::from_time_t(std::mktime(&tm)));
                 b.beforeRestore = std::string(d.name).find("before-restore") != std::string::npos;
                 backups_.push_back(b);
             }
@@ -715,6 +717,23 @@ namespace gt4stock
                       t.bad);
             return;
         }
+#if defined(GT4L_EDITION_FULL)
+        // The race HUD's names (31 Oct 2026, developer: the timing tower said "CAR" and "YOU"): hud-names.txt next to the
+        // settings, player=<your GT Mode name> and <car code>=<name> for every car on the disc. GT4.exe's tower uses them when
+        // GT4 leaves a car's name empty in its race entry (gt4_hud.cpp).
+        {
+            pollNames(true);
+            loadGarage(); // (your name: the card's save, read once)
+            std::ofstream f(inst_.settingsFile.parent_path() / "hud-names.txt", std::ios::trunc | std::ios::binary);
+            f << "# The race HUD's names, written by the launcher at Play (your GT Mode name, then GT4's car names by code).\r\n";
+            if (garage_.loaded && !garage_.player.empty())
+                f << "player=" << garage_.player << "\r\n";
+            if (names_)
+                for (uint32_t code : names_->carCodes())
+                    if (const std::string n = names_->carName(code); !n.empty())
+                        f << code << "=" << n << "\r\n";
+        }
+#endif
         const sys::Launch l = playLaunch();
         std::string error;
         if (!sys::start(l, game_, error))
@@ -765,6 +784,40 @@ namespace gt4stock
         }
     }
 
+#if defined(GT4L_EDITION_FULL)
+    // GT4.exe rewrites a widget's GT4_HUD_<KEY> line (and GT4_START_LIGHTS_BOX) in gt4-start.env when it is dragged or
+    // resized with the mouse in a race (gt4_hud.cpp, 30 Oct 2026): those places and sizes are read back when GT4 closes, so
+    // the HUD layout page shows them and the next save keeps them. Nothing else in the file is taken but GT4_FPS_POS.
+    static void keepHudMoves(const fs::path &file, Settings &st)
+    {
+        std::error_code ec;
+        if (!fs::exists(file, ec))
+            return;
+        Settings read;
+        std::vector<std::string> warnings;
+        if (!loadSettings(file, read, warnings))
+            return;
+        for (size_t i = 0; i < st.full.liveWidgets.size(); ++i)
+        {
+            FullHudWidget &w = st.full.liveWidgets[i];
+            const FullHudWidget &r = read.full.liveWidgets[i];
+            if (w.on && r.on && r.xy && (!w.xy || w.x != r.x || w.y != r.y || w.size != r.size))
+                w.xy = true, w.x = r.x, w.y = r.y, w.size = r.size;
+        }
+        st.full.lightsX = read.full.lightsX, st.full.lightsY = read.full.lightsY, st.full.lightsSize = read.full.lightsSize;
+        // The FPS counter's place (GT4_FPS_POS, dragged in GT4: gt4_fps_counter.cpp): one of the other settings, kept as read.
+        for (const auto &[k, v] : read.other)
+            if (k == "GT4_FPS_POS")
+            {
+                auto it = std::find_if(st.other.begin(), st.other.end(), [](const auto &p) { return p.first == "GT4_FPS_POS"; });
+                if (it != st.other.end())
+                    it->second = v;
+                else
+                    st.other.emplace_back(k, v);
+            }
+    }
+#endif
+
     void App::pollGame()
     {
 #if defined(GT4L_EDITION_FULL)
@@ -785,6 +838,9 @@ namespace gt4stock
 #endif
             st_.lastExit = code;
             st_.lastMinutes = static_cast<int>((sys::tickMs() - game_.startMs) / 60000u);
+#if defined(GT4L_EDITION_FULL)
+            keepHudMoves(inst_.settingsFile, st_); // boxes moved with the mouse in GT4 (gt4_hud.cpp): kept before the settings are written again
+#endif
             markDirty();
             devices_.setPaused(false);
             refreshCards();
@@ -873,7 +929,11 @@ namespace gt4stock
 #endif
         // Never a program, an Explorer window or a dialog from a test mode; --build-test's one program is gt4setup.exe,
         // a console tool started with no window (it starts nothing else).
+#if defined(GT4L_EDITION_FULL)
         sys::setNoShell(hidden_ && !opt_.buildTest);
+#else
+        sys::setNoShell(hidden_);
+#endif
         locate();
         loadAll();
         if (opt_.demo)

@@ -446,7 +446,7 @@ namespace gt4stock
     {
         static const std::vector<std::string> keys = [] {
             std::vector<std::string> k = {"GT4_RACE_MODE", "GT4_RACE_COLOUR", "GT4_ASPECT", "GT3_DISPLAY_ASPECT", "GT3_RENDERER",
-                                          "GT4L_RES_PRESET", "GT3_GS_GL_SCALE", "GT3_GS_GL_FAST", "GT4L_DRAWING","GT4_EFFECTS_SCALE", "GT4_UPSCALER", "GT4_DLSS_DRAW", "GT4_VK_PRESENT", "GT4_CAR_LIGHTING", "GT4_AO", "GT4_AO_STRENGTH", "GT4_SSR", "GT4_RELIGHT", "GT4_SHADOWS", "GT4_SUN_GLOW", "GT4_BLOOM", "GT4_DRIVE_LOG", "GT4_AI_DRIVERS", "GT4_CAM_FAR_CHASE", "GT4_CAM_LOOK", "GT4_CAM_LOOK_STICK", "GT4_TRIGGER_RANGE", "GT4_CAM_VIEWS", "GT4_CAM_LOCK",
+                                          "GT4L_RES_PRESET", "GT3_GS_GL_SCALE", "GT3_GS_GL_FAST", "GT4L_DRAWING","GT4_EFFECTS_SCALE", "GT4_UPSCALER", "GT4_DLSS_DRAW", "GT4_VK_PRESENT", "GT4_CAR_LIGHTING", "GT4_AO", "GT4_AO_STRENGTH", "GT4_SSR", "GT4_RELIGHT", "GT4_SHADOWS", "GT4_SUN_GLOW", "GT4_BLOOM", "GT4_DRIVE_LOG", "GT4_AI_DRIVERS", "GT4_CAM_FAR_CHASE", "GT4_CAM_LOOK", "GT4_CAM_LOOK_STICK", "GT4_TRIGGER_RANGE", "GT4_CAM_VIEWS", "GT4_CAM_LOCK", "GT4_CAM_BONNET",
                                           "GT4_CAR_DETAIL", "GT4_WHEEL_DETAIL", "GT4_WHEEL_BLUR", "GT4_SCREENS", "GT4_SCREENS_GEOMETRY", "GT4_PAGES", "GT4_TELEMETRY_MONITOR", "GT4_TELEMETRY_LAYOUT", "GT4L_TELEMETRY_SCREEN", "GT4_MIRROR", "GT4L_TELE_MIRROR", "GT4_TELE_BG",
                                           "GT4_NET",       "GT4_NET_IP",      "GT4_NET_INDEX", "GT4_NET_PEERS", "GT4_ENGINE_BASS", "GT4_FPS_COUNTER", "GT4_FPS_STATS",
                                           "GT4_LUT", "GT4_LUT_STRENGTH", "GT4L_LUT_FILE", "GT4_TEX_SMOOTH",
@@ -461,6 +461,7 @@ namespace gt4stock
                                           "GT4_RADAR_SHOW", "GT4_RADAR_RANGE", "GT4_RADAR_ZOOM", "GT4_RADAR_LABELS", "GT4_RADAR_CARS",
                                           "GT4_RADAR_COLOURS", "GT4_RADAR_BG", "GT4_HUD_ZOOM_KEY", "GT4_HUD_ZOOM_PAD",
                                           "GT4_START_HOLD", "GT4_START_DELAY", "GT4_START_AI", "GT4_START_CAR", "GT4_START_JUMP",
+                                          "GT4_TRACKS_HIDE", "GT4_TRACKS_UNLOCK",
                                           // the stored "Not built yet" choices (GT4L_NB_START_* and GT4L_NB_HUD_HIDE_*: an earlier
                                           // launcher's, read once, never written)
                                           "GT4L_NB_UPSCALER", "GT4L_NB_NIS_SHARPNESS", "GT4L_NB_CRT_CURVE", "GT4L_NB_CRT_GLOW", "GT4L_NB_CRT_MASK",
@@ -849,6 +850,32 @@ namespace gt4stock
             f.raceLabRecord = !v.empty() && v != "off" && v != "0";
             return true;
         }
+        if (key == "GT4_TRACKS_UNLOCK")
+        {
+            // Tracks: every course in Arcade, unlocked in the save or not (on; off).
+            f.tracksUnlockAll = v != "off" && v != "0";
+            return true;
+        }
+        if (key == "GT4_TRACKS_HIDE")
+        {
+            // Tracks: the COURSE codes Arcade leaves out ("0x16,0x0a"; none / empty: every course).
+            f.tracksHidden.clear();
+            for (size_t at = 0; at < v.size();)
+            {
+                size_t end = v.find_first_of(", ;", at);
+                if (end == std::string::npos)
+                    end = v.size();
+                const std::string word = v.substr(at, end - at);
+                char *stop = nullptr;
+                const unsigned long code = word.empty() ? 0 : std::strtoul(word.c_str(), &stop, 0);
+                if (code && stop && *stop == '\0' && code < 0x10000)
+                    f.tracksHidden.push_back(static_cast<uint32_t>(code));
+                at = end + 1;
+            }
+            std::sort(f.tracksHidden.begin(), f.tracksHidden.end());
+            f.tracksHidden.erase(std::unique(f.tracksHidden.begin(), f.tracksHidden.end()), f.tracksHidden.end());
+            return true;
+        }
         if (key == "GT4_AI_DRIVERS")
         {
             // Race Lab: the AI cars' drivers' names (the folder they are sent to: on; off).
@@ -914,7 +941,11 @@ namespace gt4stock
             else if (v == "32:9")
                 f.aspect = FullAspect::Ultra32;
             else if (v == "48:9")
-                f.aspect = FullAspect::Triple48;
+            {
+                // 48:9 on one window is gone (developer 2026-10-30, "simplify triple monitors"): three screens is the Screens
+                // page's own mode (GT4_SCREENS=3, read below). An older file's 48:9 is 16:9.
+                f.aspect = FullAspect::Wide;
+            }
             else if (v == "game")
             {
                 f.aspect = FullAspect::Wide;
@@ -938,8 +969,10 @@ namespace gt4stock
         }
         if (key == "GT3_FULLSCREEN")
         {
+            // (span, one window across every monitor, is gone with 48:9, developer 2026-10-30: an older file's span is the
+            // borderless window; three screens is the Screens page's own mode.)
             s.fullscreen = v == "1" || v == "span" || v == "exclusive";
-            f.span = v == "span";
+            f.span = false;
             f.exclusive = v == "exclusive";
             return true;
         }
@@ -972,6 +1005,19 @@ namespace gt4stock
             }
             if ((f.camViews & 0x3F) == 0)
                 f.camViews = 1 << 4;
+            return true;
+        }
+        if (key == "GT4_CAM_BONNET")
+        {
+            float u = 0, b = 0, d = 0;
+            if (std::sscanf(v.c_str(), "%f,%f,%f", &u, &b, &d) == 3)
+            {
+                f.camBonnetUp = std::clamp(static_cast<int>(std::lround(u * 100.0f)), FullSettings::kCamBonnetUpMin, FullSettings::kCamBonnetUpMax);
+                f.camBonnetBack = std::clamp(static_cast<int>(std::lround(b * 100.0f)), FullSettings::kCamBonnetBackMin, FullSettings::kCamBonnetBackMax);
+                f.camBonnetDown = std::clamp(static_cast<int>(std::lround(d)), FullSettings::kCamBonnetDownMin, FullSettings::kCamBonnetDownMax);
+            }
+            else
+                bad("<up m>,<back m>,<down degrees>");
             return true;
         }
         if (key == "GT4_CAM_VIEWS")
@@ -1111,6 +1157,63 @@ namespace gt4stock
             }
             else
                 bad("<width>,<height>,<gap> in mm: your rig's defaults");
+            return true;
+        }
+        if (key == "GT4_SCREENS_STYLE")
+        {
+            if (v == "angled" || v.empty())
+                f.screensAngled = true;
+            else if (v == "across")
+                f.screensAngled = false;
+            else
+                bad("angled or across: angled");
+            return true;
+        }
+        if (key == "GT4_SCREENS_CAMERAS")
+        {
+            // <camera>:<fov %>,<trim>,<bezels 1|0>;... (the cameras of kFullScreenCameras)
+            for (const std::string &item : split(v, ';'))
+            {
+                const size_t colon = item.find(':');
+                if (colon == std::string::npos)
+                    continue;
+                const std::string name = trim(item.substr(0, colon));
+                const std::vector<std::string> p = split(item.substr(colon + 1), ',');
+                for (int i = 0; i < kFullScreenCameras; ++i)
+                    if (name == kFullScreenCameraKeys[i] && !p.empty())
+                    {
+                        FullSettings::ScreensCamera &c = f.screensCams[i];
+                        intIn(trim(p[0]), 40, 160, c.fov);
+                        if (p.size() > 1)
+                            intIn(trim(p[1]), -30, 30, c.trim);
+                        if (p.size() > 2)
+                            c.bezels = trim(p[2]) != "0";
+                        if (p.size() > 3)
+                            intIn(trim(p[3]), -20, 20, c.upLeft);
+                        if (p.size() > 4)
+                            intIn(trim(p[4]), -20, 20, c.upRight);
+                        if (p.size() > 5)
+                            intIn(trim(p[5]), 50, 200, c.zoomLeft);
+                        if (p.size() > 6)
+                            intIn(trim(p[6]), 50, 200, c.zoomRight);
+                        if (p.size() > 7)
+                            intIn(trim(p[7]), -20, 20, c.tiltLeft);
+                        if (p.size() > 8)
+                            intIn(trim(p[8]), -20, 20, c.tiltRight);
+                    }
+            }
+            return true;
+        }
+        if (key == "GT4_SCREENS_EYE")
+        {
+            if (!intIn(v, 0, 3000, f.screensEye))
+                bad("0 (GT4's own view) or the eye to the middle screen in mm");
+            return true;
+        }
+        if (key == "GT4_SCREENS_ANGLE")
+        {
+            if (!intIn(v, 0, 80, f.screensAngle))
+                bad("0 to 80 degrees: 60");
             return true;
         }
         if (key == "GT4_NET")
@@ -1567,7 +1670,7 @@ namespace gt4stock
                 else if (v == "32:9")
                     f.aspect = FullAspect::Ultra32;
                 else if (v == "48:9")
-                    f.aspect = FullAspect::Triple48;
+                    f.aspect = FullAspect::Wide; // (48:9 on one window is gone, as GT4_ASPECT)
                 else
                     ok = v == "off" || v.empty();
             }
@@ -1631,11 +1734,11 @@ namespace gt4stock
                 ok = flag(value, f.phoneMirror);
             else if (k == "MM_MODE")
             {
-                // The modes that are not built yet (1-3); GT4_SCREENS=3 (three screens, one wide picture) wins.
+                // GT4's own Multi Monitor Mode (1, a GT4 copy per screen) and the modes never built (2, 3) are gone: developer
+                // 2026-10-30, "GT4 own triple monitor wont work, it runs at 30fps". Read and dropped: one screen, unless
+                // GT4_SCREENS=3 (three screens, one wide picture).
                 int m = 0;
                 ok = intIn(value, 0, 3, m);
-                if (ok && f.mmMode != kMmThreeWide)
-                    f.mmMode = m;
             }
             else if (k == "MM_LAYOUT")
                 ok = (v == "3" || v == "6") && intIn(value, 3, 6, f.mmLayout);
@@ -2030,9 +2133,9 @@ namespace gt4stock
             line(o, "# GT3_DISPLAY_ASPECT=pixels");
         line(o, "");
         line(o, "# ---- Window ----");
-        line(o, "# exclusive = full screen; 1 = borderless window over the monitor below; span = across all monitors;");
-        line(o, "# 0 = a window of the size below");
-        kv(o, "GT3_FULLSCREEN", !s.fullscreen ? "0" : f.span ? "span" : f.exclusive ? "exclusive" : "1");
+        line(o, "# exclusive = full screen; 1 = borderless window over the monitor below; 0 = a window of the size below");
+        line(o, "# (three screens: GT4_SCREENS=3 below)");
+        kv(o, "GT3_FULLSCREEN", !s.fullscreen ? "0" : f.exclusive ? "exclusive" : "1");
         kv(o, "GT3_WINDOW_SIZE", strf("%dx%d", s.windowW, s.windowH));
         line(o, "# The monitor: its desktop position x,y, then its name (without it GT4 opens on the main display).");
         if (s.monitorSet)
@@ -2078,12 +2181,25 @@ namespace gt4stock
         line(o, "# Send to AI cars puts gt4-drivers.txt) or off (the AI cars keep their car names)");
         kv(o, "GT4_AI_DRIVERS", f.raceLabDrivers ? "racelab-data\\ai-lines" : "off");
         line(o, "");
+        line(o, "# ---- Tracks ----");
+        line(o, "# the courses Arcade leaves out of its course lists (their COURSE codes, comma separated; none = every course).");
+        line(o, "# Your save's unlocked courses are not changed; GT Mode is not affected.");
+        {
+            std::string list;
+            for (uint32_t c : f.tracksHidden)
+                list += (list.empty() ? "" : ",") + strf("0x%02x", c);
+            kv(o, "GT4_TRACKS_HIDE", list.empty() ? "none" : list);
+        }
+        line(o, "# on = Arcade offers every course, whether or not your save has it unlocked (the save is not changed); off = as GT4 does");
+        kv(o, "GT4_TRACKS_UNLOCK", f.tracksUnlockAll ? "on" : "off");
+        line(o, "");
         line(o, "# ---- Race cameras ----");
         line(o, "# far chase: on = a chase view 1.5 times as far back, after GT4's own views (the view button); off = GT4's views");
         line(o, "# (for a GT4 program without GT4_CAM_VIEWS; GT4_CAM_VIEWS wins)");
         kv(o, "GT4_CAM_FAR_CHASE", (f.camViews >> 5) & 1 ? "on" : "off");
         line(o, "# the views the view button goes through, in this order: bumper, bonnet, roof, close (chase), chase, far (chase)");
         kv(o, "GT4_CAM_VIEWS", fullCamViewList(f.camViews & 0x3F ? f.camViews : 0x3F));
+        kv(o, "GT4_CAM_BONNET", strf("%.2f,%.2f,%d", f.camBonnetUp / 100.0, f.camBonnetBack / 100.0, f.camBonnetDown));
         line(o, "# the views locked to the car's tilt (tilting with its body); the others keep the horizon level. GT4's own:");
         line(o, "# bumper,bonnet,roof. none = no view locked");
         kv(o, "GT4_CAM_LOCK", fullCamViewList(f.camLock & 0x3F));
@@ -2125,6 +2241,29 @@ namespace gt4stock
         line(o, "# width and height and the gap between two pictures in mm (0 = a panorama, nothing left out at the frames)");
         kv(o, "GT4_SCREENS", f.mmMode == kMmThreeWide ? "3" : "1");
         kv(o, "GT4_SCREENS_GEOMETRY", fullScreensGeometry(f));
+        line(o, "# style: angled = each side screen its own view, turned in by the angle (degrees from flat); across = one picture");
+        line(o, "# across the three, as one flat screen");
+        kv(o, "GT4_SCREENS_STYLE", f.screensAngled ? "angled" : "across");
+        kv(o, "GT4_SCREENS_ANGLE", std::to_string(std::clamp(f.screensAngle, 0, 80)));
+        line(o, "# your eye to the middle screen in mm: the three views drawn from there (0 = GT4's own view, the eye 0.65 screen");
+        line(o, "# widths away)");
+        kv(o, "GT4_SCREENS_EYE", std::to_string(std::clamp(f.screensEye, 0, 3000)));
+        line(o, "# per race camera: <camera>:<field of view % of GT4's own>,<side angle trim in degrees>,<bezels 1|0>,<left screen up %>,");
+        line(o, "# <right screen up %>,<left screen zoom %>,<right screen zoom %> (F12 in a race:");
+        line(o, "# that camera's lineup picture, screens-lineup\\<camera>.png)");
+        {
+            std::string cams;
+            for (int i = 0; i < kFullScreenCameras; ++i)
+            {
+                const FullSettings::ScreensCamera &c = f.screensCams[i];
+                cams += strf("%s%s:%d,%d,%d,%d,%d,%d,%d", i ? ";" : "", kFullScreenCameraKeys[i], std::clamp(c.fov, 40, 160), std::clamp(c.trim, -30, 30),
+                             c.bezels ? 1 : 0, std::clamp(c.upLeft, -20, 20), std::clamp(c.upRight, -20, 20), std::clamp(c.zoomLeft, 50, 200),
+                             std::clamp(c.zoomRight, 50, 200));
+                if (c.tiltLeft != 0 || c.tiltRight != 0) // (Build 69's tilt: only when set, so untouched rows stay as Build 68 wrote them)
+                    cams += strf(",%d,%d", std::clamp(c.tiltLeft, -20, 20), std::clamp(c.tiltRight, -20, 20));
+            }
+            kv(o, "GT4_SCREENS_CAMERAS", cams);
+        }
         line(o, "");
         line(o, "# ---- Telemetry screen: GT4's timing and course map page (live from the race) ----");
         line(o, "# pages: off, local (this PC: the telemetry screen) or lan (phones on this home network too; nothing goes online)");
@@ -2242,7 +2381,7 @@ namespace gt4stock
         for (int i = 0; i < kFullHudWidgets; ++i)
             kv(o, (std::string("GT4L_NB_HUD_") + kFullHudWidgetKeys[i]).c_str(), hudValue(f.widgets[static_cast<size_t>(i)]));
         kv(o, "GT4L_NB_PHONE_MIRROR", onOff(f.phoneMirror));
-        kv(o, "GT4L_NB_MM_MODE", std::to_string(f.mmMode == kMmThreeWide ? 0 : std::clamp(f.mmMode, 0, 3)));
+        kv(o, "GT4L_NB_MM_MODE", "0"); // (GT4's own Multi Monitor Mode is gone: developer 2026-10-30)
         kv(o, "GT4L_NB_MM_LAYOUT", f.mmLayout == 6 ? "6" : "3");
         kv(o, "GT4L_NB_MM_ANGLE", !f.mmAngled ? std::string("flat") : f.mmAutoAngle ? std::string("auto") : std::to_string(std::clamp(f.mmAngleDeg, 0, 90)));
         kv(o, "GT4L_NB_MM_GEOMETRY", numberText(f.mmScreenW, 1) + "," + numberText(f.mmScreenH, 1) + "," + numberText(f.mmBezel, 1) + "," +

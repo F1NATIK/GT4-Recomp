@@ -285,6 +285,9 @@ public:
     void run();
     void requestStop();
     void postEvent(EeEvent event);
+    // Any thread: the guest's next checkpoint returns to the scheduler loop (which then processes what is
+    // pending). A hint only: losing it to the loop's own clearing just leaves the normal wake (postEvent).
+    void nudgeCheckpoint() noexcept { m_checkpointPending.store(true, std::memory_order_release); }
     // GT4 (vblank_clock.h, PS2X_IPU_VBLANK / PS2X_VBLANK_HOST_CLOCK): deliver
     // the VBlankStart whose host deadline has passed at the next checkpoint
     // (trigger 1 IPU work, 2 timer). Any thread.
@@ -440,6 +443,7 @@ private:
     bool m_rescheduleRequested = false;
     bool m_timeSliceExpired = false;
     bool m_insideInterrupt = false;
+    bool m_vif1HandlerStartStamp = false; // GT3_VIF1_THREAD_STATS: the VIF1 handler's first dispatch is stamped
     uint32_t m_pendingEeTimerInterrupts = 0;
     uint64_t m_eeCycle = 0;
     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;

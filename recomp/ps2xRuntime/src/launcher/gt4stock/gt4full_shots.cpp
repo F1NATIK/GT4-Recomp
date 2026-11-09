@@ -470,29 +470,24 @@ namespace gt4stock
             // The race cameras (full-m2, Cameras): both on (the defaults), a release build, a controller mapping that feeds GT4's
             // right stick from a trigger (the 360 look given off, with the reason), and a GT4 program without them (greyed in a
             // test build; Play does not pass them).
-            {"F04i-display-cameras", Page::Display, [&] { st_.full.displayTab = 6; }},
-            {"F04j-release-look-cameras", Page::Display, [&] {
+            {"F04i-display-cameras", Page::RaceCameras, [] {}},
+            {"F04j-release-look-cameras", Page::RaceCameras, [&] {
                  showUnbuilt_ = false;
-                 st_.full.displayTab = 6;
              }},
-            {"F04k-display-cameras-trigger-on-right-stick", Page::Display, [&] {
-                 st_.full.displayTab = 6;
+            {"F04k-display-cameras-trigger-on-right-stick", Page::RaceCameras, [&] {
                  st_.pad.stickAxis[1] = 5;
              }},
-            {"F04l-display-cameras-gt4-without-them", Page::Display, [&] {
+            {"F04l-display-cameras-gt4-without-them", Page::RaceCameras, [&] {
                  full_.cameras = full_.moreCameras = false;
-                 st_.full.displayTab = 6;
              }},
             // More race cameras (full-m2, MoreCams): a chosen set (no bumper, the far chase out, the chase views locked and the
             // bonnet level), and a GT4 program with only the far chase (the Cameras track's: the rest greyed, not passed).
-            {"F04m-display-cameras-views-and-tilt", Page::Display, [&] {
-                 st_.full.displayTab = 6;
+            {"F04m-display-cameras-views-and-tilt", Page::RaceCameras, [&] {
                  st_.full.camViews = 0x1E; // bonnet, roof, close chase, chase
                  st_.full.camLock = 0x1D;  // bumper, roof, close chase, chase locked; bonnet level
              }},
-            {"F04n-display-cameras-gt4-with-only-the-far-chase", Page::Display, [&] {
+            {"F04n-display-cameras-gt4-with-only-the-far-chase", Page::RaceCameras, [&] {
                  full_.moreCameras = false;
-                 st_.full.displayTab = 6;
              }},
             {"F05-display-smoothness", Page::Display, [&] { st_.full.displayTab = 3; }},
             {"F05b-display-smoothness-not-prepared", Page::Display, [&] {
@@ -784,6 +779,11 @@ namespace gt4stock
              }},
             {"F08-multi-screen", Page::Multiscreen, [] {}},
             {"F08b-multi-screen-three-screens", Page::Multiscreen, [&] { st_.full.mmMode = kMmThreeWide; }},
+            {"F08b2-multi-screen-three-screens-per-camera-end", Page::Multiscreen, [&] {
+                 // (scrolled to the end: the Per camera card's last rows, the right screen's tilt, inside the card)
+                 st_.full.mmMode = kMmThreeWide;
+                 ui_.scrollTo("screens", 1e6f);
+             }},
             {"F08c-multi-screen-three-screens-panorama", Page::Multiscreen, [&] {
                  st_.full.mmMode = kMmThreeWide;
                  st_.full.mmPanorama = true;
@@ -821,6 +821,7 @@ namespace gt4stock
             {"F09b-wheel", Page::Controllers, [&] { controllersTab_ = 1; }},
             {"F09c-eyetoy", Page::Controllers, [&] { controllersTab_ = 2; }},
             {"F10-saves", Page::Saves, [] {}},
+            {"F10f-saves-gt4-running", Page::Saves, [&] { gameRunning_ = true; }}, // (Back up now greyed, and why)
             {"F10b-progress-overview", Page::Saves, [&] {
                  savesProgress_ = true;
                  progressTab_ = 0;
@@ -989,6 +990,12 @@ namespace gt4stock
                  st_.cheats.card = true;
                  st_.cheats.ticked = {"credits", "licence", "test", "event", "mission", "options"};
              }},
+            {"F12c-cheats-gt4-running", Page::Cheats, [&] {
+                 // (the switches' line while GT4 runs: they apply from its next start)
+                 gameRunning_ = true;
+                 st_.cheats.noday = true;
+                 st_.cheats.card = true;
+             }},
             {"F12b-cheats-one-page-sheet", Page::Cheats, [&] {
                  st_.cheats.ticked = {"credits", "licence", "test", "event", "mission", "options"};
                  modal_ = Modal::CheatSave;
@@ -1040,6 +1047,8 @@ namespace gt4stock
              }},
             {"F14-about", Page::About, [&] { aboutView_ = 0; }},
             {"F22-racelab", Page::RaceLab, [&] { st_.full.raceLabRecord = true; racelab::showTabForTest(0); }},
+            {"F25-tracks", Page::Tracks, [&] { st_.full.tracksHidden.clear(); }},
+            {"F25b-tracks-hidden", Page::Tracks, [&] { st_.full.tracksHidden = {0x0a, 0x2b, 0x6e, 0x86, 0x99}; }}, // (sorted, as read)
             // The Race Lab tab (analysis/design/racelab-tab): AI drivers with a name being changed, Laps, Races, Settings.
             {"F22b-racelab-rename", Page::RaceLab, [&] { racelab::showTabForTest(0, true); }},
             {"F22c-racelab-laps", Page::RaceLab, [&] { racelab::showTabForTest(1); }},
@@ -1189,13 +1198,13 @@ namespace gt4stock
              }},
             {"F20d-save-rename-repair-first", Page::Saves, [&] {
                  details(0);
-                 nameEdit_ = "Player";
+                 nameEdit_ = "developer";
                  modal_ = Modal::RenameSave;
              }},
             {"F20e-save-details-clean", Page::Saves, [&] { details(1); }},
             {"F20f-save-rename-entry", Page::Saves, [&] {
                  details(1);
-                 nameEdit_ = "Player";
+                 nameEdit_ = "developer";
                  modal_ = Modal::RenameSave;
              }},
             {"F20g-save-rename-too-long", Page::Saves, [&] {
@@ -1206,7 +1215,7 @@ namespace gt4stock
             {"F20h-save-rename-confirm", Page::Saves, [&] {
                  details(1);
                  const EditTarget target = detailsEditTarget();
-                 openGarageEdit(renameEdit("Player"), &target);
+                 openGarageEdit(renameEdit("developer"), &target);
              }},
         };
         int written = 0, failed = 0, visibleChecks = 0;
@@ -1505,12 +1514,28 @@ namespace gt4stock
                 {
                     if (pass == 1)
                         sc.setup(); // again: a scroll to the end needs the content's height from the first pass
+                    ui_.setAudit(pass == 1); // the layout audit of the picture's own frame
                     prepareFullPreview();
                     prepareCheats(w, h);
                     BeginTextureMode(rt);
                     ClearBackground(ui::theme().bg);
                     frame(w, h, ui::Input{});
                     EndTextureMode();
+                }
+                ui_.setAudit(false);
+                {
+                    // Layout audit (ui::Ui::auditIssues): one line per finding, in the report and in layout-audit.txt.
+                    const std::vector<std::string> issues = ui_.auditIssues();
+                    static bool fresh = true;
+                    if (FILE *af = std::fopen(pathText(opt_.shots / "layout-audit.txt").c_str(), fresh ? "w" : "a"))
+                    {
+                        fresh = false;
+                        for (const std::string &issue : issues)
+                            std::fprintf(af, "%s-%dx%d: %s\n", sc.name, w, h, issue.c_str());
+                        std::fclose(af);
+                    }
+                    for (const std::string &issue : issues)
+                        report(strf("LAYOUT %s-%dx%d: %s", sc.name, w, h, issue.c_str()));
                 }
                 Image img = LoadImageFromTexture(rt.texture);
                 ImageFlipVertical(&img);

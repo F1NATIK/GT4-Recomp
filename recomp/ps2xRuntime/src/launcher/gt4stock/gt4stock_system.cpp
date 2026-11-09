@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwctype>
 
 #define WIN32_LEAN_AND_MEAN
@@ -672,4 +673,86 @@ namespace gt4stock::sys
             g.why = (g.nvExport || g.amdExport) ? "the program's request does not apply to the high-performance GPU's vendor" : "the program asks for no GPU";
         return g;
     }
+
+    MonitorSpec monitorSpec(int x, int y)
+    {
+        MonitorSpec s;
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof(mi);
+        HMONITOR mon = MonitorFromPoint(POINT{x, y}, MONITOR_DEFAULTTONULL);
+        if (!mon || !GetMonitorInfoW(mon, &mi))
+        {
+            s.why = "no monitor there";
+            return s;
+        }
+        // The monitor on that display (its device interface: \\?\DISPLAY#<id>#<instance>#{guid}) and its registry key,
+        // HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<id>\<instance>\Device Parameters, value EDID.
+        std::wstring key;
+        DISPLAY_DEVICEW dd{};
+        dd.cb = sizeof(dd);
+        for (DWORD i = 0; key.empty() && EnumDisplayDevicesW(mi.szDevice, i, &dd, EDD_GET_DEVICE_INTERFACE_NAME); ++i, dd.cb = sizeof(dd))
+        {
+            if (!(dd.StateFlags & DISPLAY_DEVICE_ACTIVE))
+                continue;
+            std::wstring id = dd.DeviceID;
+            if (id.rfind(L"\\\\?\\", 0) == 0)
+                id = id.substr(4);
+            std::vector<std::wstring> parts;
+            std::wstring cur;
+            for (wchar_t ch : id)
+                if (ch == L'#')
+                    parts.push_back(cur), cur.clear();
+                else
+                    cur += ch;
+            parts.push_back(cur);
+            if (parts.size() >= 3)
+                key = L"SYSTEM\\CurrentControlSet\\Enum\\" + parts[0] + L"\\" + parts[1] + L"\\" + parts[2] + L"\\Device Parameters";
+        }
+        if (key.empty())
+        {
+            s.why = "Windows names no monitor on that display";
+            return s;
+        }
+        unsigned char e[512] = {};
+        DWORD size = sizeof(e);
+        HKEY hk = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &hk) != ERROR_SUCCESS)
+        {
+            s.why = "the monitor's description is not in the registry";
+            return s;
+        }
+        const LONG r = RegQueryValueExW(hk, L"EDID", nullptr, nullptr, e, &size);
+        RegCloseKey(hk);
+        static const unsigned char header[8] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
+        if (r != ERROR_SUCCESS || size < 128 || std::memcmp(e, header, 8) != 0)
+        {
+            s.why = "the monitor gives no description (EDID)";
+            return s;
+        }
+        const unsigned m = (static_cast<unsigned>(e[8]) << 8) | e[9];
+        s.maker = {static_cast<char>('A' - 1 + ((m >> 10) & 31)), static_cast<char>('A' - 1 + ((m >> 5) & 31)), static_cast<char>('A' - 1 + (m & 31))};
+        for (int d = 54; d <= 108; d += 18)
+        {
+            const unsigned char *b = e + d;
+            if (b[0] == 0 && b[1] == 0 && b[3] == 0xfc)
+            {
+                std::string name;
+                for (int k = 5; k < 18 && b[k] != 0x0a && b[k] != 0; ++k)
+                    name += static_cast<char>(b[k]);
+                while (!name.empty() && name.back() == ' ')
+                    name.pop_back();
+                s.model = name;
+            }
+            else if (d == 54 && (b[0] || b[1])) // (the first detailed timing: the picture's size in mm)
+            {
+                s.widthMm = b[12] | ((b[14] & 0xf0) << 4);
+                s.heightMm = b[13] | ((b[14] & 0x0f) << 8);
+            }
+        }
+        if (s.widthMm <= 0 || s.heightMm <= 0) // (else the basic size, whole cm)
+            s.widthMm = e[21] * 10, s.heightMm = e[22] * 10;
+        s.ok = true;
+        return s;
+    }
 }
+

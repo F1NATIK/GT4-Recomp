@@ -1,4 +1,4 @@
-﻿// GT4 Recompilation launcher, Full edition: Build GT4 from the player's own disc. The release has no game code in it;
+// GT4 Recompilation launcher, Full edition: Build GT4 from the player's own disc. The release has no game code in it;
 // its build-kit folder holds gt4setup.exe, the recomp source, the release config (addresses only), the tools (ps2_recomp,
 // llvm-mingw, CMake, Ninja) and the libraries' sources. "gt4setup build" makes the game code from the disc chosen on Play,
 // compiles GT4.exe and copies it and game\ (the disc's boot files and CORE.elf; the cards stay) next to the launcher.

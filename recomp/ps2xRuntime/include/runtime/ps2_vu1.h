@@ -86,8 +86,17 @@ public:
     // FNV-1a 64 of the code image whose translation ran last (0: none).
     uint64_t translatedImageHash() const;
     uint64_t interpretedPrograms() const { return m_interpretedPrograms; }
+    // Read / write tracking (images generated with GT3_VU1T_TRACK=1; GT4's parallel VU1, analysis/design/triple-60fps):
+    // with it on, a translated program records what it read before writing and what it wrote (trackedCtx()'s regRead,
+    // regWritten, memRead, memWritten). lastRunTracked(): the last execute/resume ran translated, to its end, without
+    // errors, with tracking on - else its sets are not to be used.
+    void setTracking(bool on) { m_tracking = on; }
+    bool lastRunTracked() const { return m_lastRunTracked; }
+    const ps2vu1t::Ctx *trackedCtx() const { return m_translatedCtx.get(); }
 
 private:
+    bool m_tracking = false;
+    bool m_lastRunTracked = false;
     bool tryTranslated(uint8_t *vuCode, uint32_t codeSize, uint8_t *vuData, uint32_t dataSize,
                        GS &gs, PS2Memory *memory, uint32_t startPC);
     static bool submitTranslatedPacket(void *user, const uint8_t *packet, uint32_t bytes);

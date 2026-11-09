@@ -93,6 +93,7 @@ namespace gt4stock
         bool rendererAuto = false;
         bool classic = false;       // GT4_CLASSIC_BUILD=1: the Classic GT4 (the Full launcher needs a development one)
         bool soundPacks = false;    // GT4_SOUND_PACK (Sound > Sound packs; analysis/design/sound-packs)
+        bool tracks = false;        // GT4_TRACKS_HIDE (Tracks; analysis/design/tracks: gt4_tracks.cpp)
         bool has480p() const { return raceMode && raceColour && aspect; }
         std::string text() const;
     };

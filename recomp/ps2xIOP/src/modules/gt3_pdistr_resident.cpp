@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/pdistr_resident.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/gt3/pdistr_startup_image.h"
 #include "ps2x/iop/gt3/pdistr_workers.h"
 #include "ps2x/iop/gt3/pdistr_disc_stream.h"
@@ -17,8 +18,8 @@ RpcResult rejected() { RpcResult r; r.serverDispatchPolicy=ServerDispatchPolicy:
 bool eeSpan(uint32_t address,uint32_t size,uint32_t& physical) {
     // Do not accept the host's broader mirroring or modeled IOP heap as EE RAM.
     for (uint32_t base:{0u,0x20000000u,0x80000000u,0xa0000000u}) {
-        if (address>=base && uint64_t(address)-base<0x2000000) {
-            physical=address-base; return size<=0x2000000-physical;
+        if (address>=base && uint64_t(address)-base<kEeRamBytes) {
+            physical=address-base; return size<=kEeRamBytes-physical;
         }
     }
     return false;
@@ -238,7 +239,7 @@ struct PdistrResident::State {
             const auto size=word(bytes,8); uint32_t destination=0;
             if (size) {
                 const uint64_t dma=(uint64_t(size)+15)&~uint64_t(15);
-                if (dma>0x2000000 || !eeSpan(word(bytes,4),uint32_t(dma),destination) ||
+                if (dma>kEeRamBytes || !eeSpan(word(bytes,4),uint32_t(dma),destination) ||
                     (request.receive.size && uint64_t(destination)<uint64_t(receive)+request.receive.size &&
                         uint64_t(receive)<uint64_t(destination)+dma)) return rejected();
             }

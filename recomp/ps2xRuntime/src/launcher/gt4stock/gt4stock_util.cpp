@@ -243,15 +243,29 @@ namespace gt4stock
         const char *const kMonths[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     }
 
-    std::string timeText(fs::file_time_type t)
+    std::chrono::system_clock::time_point toSystemTime(fs::file_time_type t)
     {
 #if defined(_MSC_VER)
-        const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(t);
-#else // libc++ has no clock_cast: shift by the two clocks' difference now (seconds are enough here)
-        const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            std::chrono::system_clock::now() + (t - fs::file_time_type::clock::now()));
+        return std::chrono::clock_cast<std::chrono::system_clock>(t);
+#else // libc++ has no clock_cast: shift by the two clocks' difference now (seconds are enough for the launcher)
+        return std::chrono::time_point_cast<std::chrono::system_clock::duration>(std::chrono::system_clock::now() +
+                                                                                 (t - fs::file_time_type::clock::now()));
 #endif
-        const std::tm tm = localTime(std::chrono::system_clock::to_time_t(sys));
+    }
+
+    fs::file_time_type toFileTime(std::chrono::system_clock::time_point t)
+    {
+#if defined(_MSC_VER)
+        return std::chrono::clock_cast<fs::file_time_type::clock>(t);
+#else
+        return std::chrono::time_point_cast<fs::file_time_type::duration>(fs::file_time_type::clock::now() +
+                                                                          (t - std::chrono::system_clock::now()));
+#endif
+    }
+
+    std::string timeText(fs::file_time_type t)
+    {
+        const std::tm tm = localTime(std::chrono::system_clock::to_time_t(toSystemTime(t)));
         return strf("%d %s %d %02d:%02d", tm.tm_mday, kMonths[std::clamp(tm.tm_mon, 0, 11)], tm.tm_year + 1900, tm.tm_hour, tm.tm_min);
     }
 

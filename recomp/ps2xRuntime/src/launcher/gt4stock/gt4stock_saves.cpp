@@ -181,7 +181,7 @@ namespace gt4stock
         {
             std::time_t tt = std::time(nullptr);
             if (t != fs::file_time_type{})
-                tt = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(t));
+                tt = std::chrono::system_clock::to_time_t(toSystemTime(t));
             std::tm tm{};
 #if defined(_WIN32)
             localtime_s(&tm, &tt);

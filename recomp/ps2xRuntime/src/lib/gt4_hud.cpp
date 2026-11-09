@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <mutex>
@@ -648,6 +649,58 @@ namespace gt4hud
                     return d + "  " + code;
             return driver;
         }
+        // ---- The launcher's names (31 Oct 2026, developer: the tower said "CAR" and "YOU"): hud-names.txt next to GT4.exe, written
+        // at Play (gt4stock_app.cpp): player=<GT Mode name> and <car code>=<GT4's car name>. GT4 leaves the race entry's name
+        // empty in some races (the developer's Seattle race in Test Build 68; Arcade fills it), so a car without one is named by its code.
+        struct HudNames
+        {
+            std::string player;
+            std::vector<std::pair<uint32_t, std::string>> cars; // by code
+            const char *car(uint32_t code) const
+            {
+                const auto it = std::lower_bound(cars.begin(), cars.end(), code, [](const auto &p, uint32_t c) { return p.first < c; });
+                return it != cars.end() && it->first == code ? it->second.c_str() : "";
+            }
+        };
+        const HudNames &hudNames()
+        {
+            static const HudNames n = [] {
+                HudNames r;
+#if defined(_WIN32)
+                char exe[1024];
+                const unsigned long len = GetModuleFileNameA(nullptr, exe, sizeof(exe));
+                if (len == 0 || len >= sizeof(exe))
+                    return r;
+                std::string path(exe, len);
+                path.erase(path.find_last_of("\\/") + 1);
+                std::ifstream in(path + "hud-names.txt");
+                for (std::string l; std::getline(in, l);)
+                {
+                    if (!l.empty() && l.back() == '\r')
+                        l.pop_back();
+                    const size_t eq = l.find('=');
+                    if (l.empty() || l[0] == '#' || eq == std::string::npos)
+                        continue;
+                    if (l.compare(0, eq, "player") == 0)
+                        r.player = gt4drivers::asciiName(l.substr(eq + 1));
+                    else
+                    {
+                        char *end = nullptr;
+                        const unsigned long code = std::strtoul(l.c_str(), &end, 10);
+                        if (end == l.c_str() + eq)
+                            r.cars.emplace_back(static_cast<uint32_t>(code), gt4drivers::asciiName(l.substr(eq + 1)));
+                    }
+                }
+                std::sort(r.cars.begin(), r.cars.end());
+                std::fprintf(stderr, "[gt4-hud] hud-names.txt: %zu car names, player name %s\n", r.cars.size(), r.player.empty() ? "none" : "read");
+#endif
+                return r;
+            }();
+            return n;
+        }
+        // A car's name: GT4's race entry's, else the launcher's for its code.
+        const char *carNameOf(const gt4race::Car &c) { return c.name[0] ? c.name : hudNames().car(c.carCode); }
+
         // ---- The timing tower: place, name, then the columns picked; the rows kept around you.
         void drawTower(const Rectangle &r, float alpha, const gt4race::State &s, const Spec &sp, float H)
         {
@@ -683,12 +736,16 @@ namespace gt4hud
                 // (fitted to the width gt4hudlook::tower draws the name in: the column less a tenth of the dot's and half the pad)
                 // (21 Oct, developer: the drivers did not show with Names on Car, the default: an AI car the Race Lab named a driver for
                 // shows its driver and car code there too; Short keeps the codes, its column too narrow for names)
-                const std::string drv = sp.towerName == 2 ? (c.player ? std::string("You") : gt4drivers::asciiName(gt4drivers::driverOf(s, ci)))
+                // (31 Oct, developer: your row shows your GT Mode name from the launcher's hud-names.txt, "You" without one; a car GT4
+                // left unnamed is named by its code from the same file)
+                const char *carName = carNameOf(c);
+                const std::string you = hudNames().player.empty() ? std::string("You") : hudNames().player;
+                const std::string drv = sp.towerName == 2 ? (c.player ? you : gt4drivers::asciiName(gt4drivers::driverOf(s, ci)))
                                         : sp.towerName == 0 && !c.player ? gt4drivers::asciiName(gt4drivers::driverOf(s, ci))
                                                                          : std::string();
-                t.name = !drv.empty() ? towerDriverName(drv, shortCode(c.name), gt4hudbox::kTowerRow * k * 0.5f,
+                t.name = !drv.empty() ? towerDriverName(drv, shortCode(carName), gt4hudbox::kTowerRow * k * 0.5f,
                                                         (gt4hudbox::kTowerNameW[std::clamp(sp.towerName, 0, 2)] - gt4hudbox::kTowerDot * 0.1f - gt4hudbox::kTowerPad * 0.5f) * k)
-                         : sp.towerName == 1 ? shortCode(c.name) : std::string(c.name);
+                         : sp.towerName == 1 ? shortCode(carName) : std::string(carName);
                 // Gap to the leader and to the car ahead (the page's maths: the time at the same progress; finished cars by total time).
                 std::string gap, iv;
                 if (j == 0)
@@ -1283,6 +1340,203 @@ namespace gt4hud
         // places.
         std::atomic<int> g_compactView{-1};
         std::atomic<bool> g_panelHidden{false};
+
+        // ---- Moving the boxes with the mouse in a race (30 Oct 2026, developer: "drag the HUD widgets around while playing").
+        // The left button drags a box (any widget, or the start lights while they show); the wheel over one resizes it in 5 %
+        // steps (40..250 %). A box moved is placed by its centre from then on (the new form, as the launcher's HUD layout page
+        // places it: an Automatic one stops being Automatic), and its GT4_HUD_<KEY> (GT4_START_LIGHTS_BOX) line in
+        // gt4-start.env next to GT4.exe is rewritten when the button is let go (the wheel: 0.4 s after the last notch), so the
+        // next start and the launcher (it reads the file again when GT4 closes) keep it. The box under the mouse gets an outline
+        // and its place for 2 s after the mouse last moved. The presenter's thread only (draw()); the right button stays the
+        // 360 look's (ps2_runtime.cpp).
+        constexpr int Lights = WidgetCount; // g_moved / g_drawn's last entry: the start lights
+        struct Moved
+        {
+            bool set = false;
+            float x = 0.5f, y = 0.5f, size = 1.0f; // the centre (fractions of the HUD area), the size (1 = 100 %)
+        };
+        Moved g_moved[WidgetCount + 1];
+        Rectangle g_drawn[WidgetCount + 1]; // last frame's boxes (width 0: not drawn)
+        int g_grab = -1, g_hover = -1;
+        Vector2 g_grabOff{};               // the mouse less the box's centre when it was taken
+        double g_mouseAt = -10.0;          // GetTime() when the mouse last moved
+        int g_unsaved = -1;                // a box resized by the wheel, saved 0.4 s after the last notch
+        double g_wheelAt = 0.0;
+
+        // The line GT4.exe reads back (gt4_hud.h; the launcher's fullHudValue writes the same).
+        std::string movedLine(int i)
+        {
+            const Settings &t = settings();
+            const Moved &m = g_moved[i];
+            char b[96];
+            if (i == Lights)
+            {
+                std::snprintf(b, sizeof(b), "GT4_START_LIGHTS_BOX=%.1f,%.1f,%d", m.x * 100.0f, m.y * 100.0f, static_cast<int>(std::lround(m.size * 100.0f)));
+                return b;
+            }
+            const Spec &sp = t.w[i];
+            std::snprintf(b, sizeof(b), "%s=on,%.1f,%.1f,%d,%d", kKeys[i], m.x * 100.0f, m.y * 100.0f, static_cast<int>(std::lround(m.size * 100.0f)),
+                          std::clamp(static_cast<int>(std::lround((1.0f - sp.alpha) * 100.0f)), 0, 90));
+            std::string v = b;
+            if (i != Tower && gt4hudbox::kStyles[i][0])
+                v += std::string(",") + gt4hudbox::kStyles[i][std::clamp(sp.style, 0, 1)];
+            if (i == Map)
+                v += std::string(",") + gt4hudbox::kMapDetail[sp.simple ? 1 : 0];
+            if (i == Tower)
+            {
+                std::string cols;
+                for (int k = 0; k < 4; ++k)
+                    if (sp.towerCols & (1 << k))
+                        cols += (cols.empty() ? "" : "+") + std::string(gt4hudbox::kTowerCols[k]);
+                v += std::string(",") + gt4hudbox::kTowerNames[std::clamp(sp.towerName, 0, 2)] + "," + (cols.empty() ? "none" : cols) + "," +
+                     std::to_string(std::clamp(sp.towerRows, 4, 16));
+            }
+            return v;
+        }
+        // Box i's line in gt4-start.env (saveStartLine).
+        void saveMoved(int i);
+    } // namespace
+
+    // A line in gt4-start.env (next to GT4.exe; nothing when there is none: a run started with the settings passed as
+    // variables), written to a copy and put in its place.
+    void saveStartLine(const std::string &line)
+    {
+#if defined(_WIN32)
+            char exe[1024];
+            const unsigned long n = GetModuleFileNameA(nullptr, exe, sizeof(exe));
+            if (n == 0 || n >= sizeof(exe))
+                return;
+            std::string dir(exe, n);
+            dir.erase(dir.find_last_of("\\/") + 1);
+            const std::string file = dir + "gt4-start.env", temp = file + ".hud-move";
+            std::ifstream in(file);
+            if (!in)
+                return;
+            const std::string key = line.substr(0, line.find('=') + 1);
+            std::vector<std::string> lines;
+            bool put = false;
+            for (std::string l; std::getline(in, l);)
+            {
+                if (!l.empty() && l.back() == '\r')
+                    l.pop_back();
+                if (l.compare(0, key.size(), key) == 0)
+                {
+                    if (put)
+                        continue;
+                    l = line, put = true;
+                }
+                lines.push_back(l);
+            }
+            in.close();
+            if (!put)
+                lines.push_back(line);
+            {
+                std::ofstream out(temp, std::ios::trunc | std::ios::binary);
+                for (const std::string &l : lines)
+                    out << l << "\r\n";
+                if (!out)
+                {
+                    std::fprintf(stderr, "[gt4-hud] moved box: could not write %s\n", temp.c_str());
+                    return;
+                }
+            }
+            std::error_code ec;
+            std::filesystem::rename(temp, file, ec);
+            std::fprintf(stderr, "[gt4-hud] moved box: %s%s\n", line.c_str(), ec ? " (gt4-start.env could not be replaced)" : "");
+#else
+            (void)line;
+#endif
+    }
+
+    namespace
+    {
+        void saveMoved(int i) { saveStartLine(movedLine(i)); }
+
+        // Before the boxes are drawn: the mouse against last frame's boxes (HUD area x, y, w, h).
+        void moveInput(float x, float y, float w, float h)
+        {
+            const Vector2 mouse = GetMousePosition(), d = GetMouseDelta();
+            if (d.x != 0.0f || d.y != 0.0f)
+                g_mouseAt = GetTime();
+            auto under = [&]() {
+                for (int i = WidgetCount; i >= 0; --i) // the lights and the later boxes are drawn on top
+                    if (g_drawn[i].width > 0.0f && CheckCollisionPointRec(mouse, g_drawn[i]))
+                        return i;
+                return -1;
+            };
+            auto take = [&](int i) {
+                // the box's centre and size as drawn now, so a box placed any way starts from where it shows
+                const Rectangle &r = g_drawn[i];
+                Moved &m = g_moved[i];
+                if (!m.set)
+                {
+                    const Settings &t = settings();
+                    m.size = i == Lights ? (t.lightsBox ? t.lsize : 1.0f) : t.w[i].size;
+                }
+                m.set = true;
+                m.x = std::clamp((r.x + r.width * 0.5f - x) / w, 0.0f, 1.0f);
+                m.y = std::clamp((r.y + r.height * 0.5f - y) / h, 0.0f, 1.0f);
+            };
+            if (g_grab < 0)
+                g_hover = under();
+            if (g_grab < 0 && g_hover >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            {
+                g_grab = g_hover;
+                take(g_grab);
+                const Rectangle &r = g_drawn[g_grab];
+                g_grabOff = Vector2{mouse.x - (r.x + r.width * 0.5f), mouse.y - (r.y + r.height * 0.5f)};
+            }
+            if (g_grab >= 0)
+            {
+                // the centre follows the mouse, kept where the whole box stays inside the HUD area
+                const Rectangle &r = g_drawn[g_grab];
+                const float hw = std::min(r.width, w) * 0.5f, hh = std::min(r.height, h) * 0.5f;
+                Moved &m = g_moved[g_grab];
+                m.x = (std::clamp(mouse.x - g_grabOff.x, x + hw, x + w - hw) - x) / w;
+                m.y = (std::clamp(mouse.y - g_grabOff.y, y + hh, y + h - hh) - y) / h;
+                if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+                {
+                    saveMoved(g_grab);
+                    g_hover = g_grab, g_grab = -1;
+                }
+                return;
+            }
+            if (const float wheel = GetMouseWheelMove(); wheel != 0.0f && g_hover >= 0)
+            {
+                take(g_hover);
+                Moved &m = g_moved[g_hover];
+                m.size = std::clamp(std::round(m.size * 20.0f + (wheel > 0.0f ? 1.0f : -1.0f)) / 20.0f, 0.4f, 2.5f);
+                if (g_unsaved >= 0 && g_unsaved != g_hover)
+                    saveMoved(g_unsaved);
+                g_unsaved = g_hover, g_wheelAt = GetTime(), g_mouseAt = GetTime();
+            }
+        }
+        // After the boxes: the outline and place of the box under the mouse (or held).
+        void moveOutline(float x, float y, float w, float h)
+        {
+            const int i = g_grab >= 0 ? g_grab : g_hover;
+            if (i < 0 || g_drawn[i].width <= 0.0f || (g_grab < 0 && GetTime() - g_mouseAt > 2.0))
+                return;
+            static const char *const kNames[WidgetCount + 1] = {"Radar", "Delta", "Pedals", "G-meter", "Timing tower", "Map",
+                                                                "Splits", "Rev lights", "Speed", "Gear", "Lap", "Start lights"};
+            const Rectangle r = g_drawn[i];
+            const Color c = g_grab >= 0 ? Color{255, 214, 64, 230} : Color{255, 255, 255, 170};
+            DrawRectangleLinesEx(Rectangle{r.x - 2.0f, r.y - 2.0f, r.width + 4.0f, r.height + 4.0f}, 2.0f, c);
+            char label[96];
+            const Moved &m = g_moved[i];
+            if (m.set)
+                std::snprintf(label, sizeof(label), "%s  %.1f, %.1f  %d%%", kNames[i], m.x * 100.0f, m.y * 100.0f, static_cast<int>(std::lround(m.size * 100.0f)));
+            else
+                std::snprintf(label, sizeof(label), "%s  (drag to move, wheel to resize)", kNames[i]);
+            const float fs = std::clamp(0.022f * h, 12.0f, 26.0f), tw = gt4hudlook::textWidth(label, fs) + fs;
+            const float lx = std::clamp(r.x + r.width * 0.5f - tw * 0.5f, x, std::max(x, x + w - tw));
+            const float ly = r.y - fs * 1.5f - 4.0f >= y ? r.y - fs * 1.5f - 4.0f : std::min(r.y + r.height + 4.0f, y + h - fs * 1.5f);
+            const Rectangle back{lx, ly, tw, fs * 1.5f};
+            DrawRectangleRec(back, Color{0, 0, 0, 170});
+            gt4hudlook::text(label, back.x + back.width * 0.5f, back.y + back.height * 0.5f, fs, c);
+            mark(Rectangle{r.x - 2.0f, r.y - 2.0f, r.width + 4.0f, r.height + 4.0f});
+            mark(back);
+        }
     } // namespace
 
     void beforeRaceDisplayDraw(uint8_t *rdram, uint32_t rd)
@@ -1455,6 +1709,7 @@ namespace gt4hud
         return t.w[Radar].on && !t.radarZoom.empty() ? t.zoomPad : -1;
     }
     void zoomPress() { g_zoomPresses.fetch_add(1, std::memory_order_relaxed); }
+    bool mouseTaken() { return g_grab >= 0 || g_hover >= 0; }
 
     bool enabled()
     {
@@ -1472,6 +1727,14 @@ namespace gt4hud
         const Settings &t = settings();
         if (!enabled() || w < 16.0f || h < 16.0f)
             return;
+        // (a box resized with the wheel: saved 0.4 s after the last notch, in a race or not)
+        if (g_unsaved >= 0 && GetTime() - g_wheelAt > 0.4)
+            saveMoved(g_unsaved), g_unsaved = -1;
+        // (last frame's boxes; none until this frame draws them)
+        Rectangle drawnBefore[WidgetCount + 1];
+        std::copy(std::begin(g_drawn), std::end(g_drawn), drawnBefore);
+        for (Rectangle &r : g_drawn)
+            r = Rectangle{};
         gt4race::State s;
         if (gt4race::msSinceLastFrame() > 500u || !gt4race::snapshot(s))
             return;
@@ -1497,7 +1760,53 @@ namespace gt4hud
                     radarZoomStep(t, s);
         }
         if (!live || pi < 0 || pi >= s.carCount)
+        {
+            if (g_grab >= 0)
+                saveMoved(g_grab), g_grab = -1; // (the race ended under a drag: kept where it was)
+            g_hover = -1;
             return;
+        }
+        std::copy(std::begin(drawnBefore), std::end(drawnBefore), g_drawn);
+        moveInput(x, y, w, h);
+        // (test: GT4_HUD_MOVE_TEST=<vsync>:<box 0-11>:<x %>,<y %>,<size %>;... moves a box at that vsync as a drag would,
+        // and saves it)
+        {
+            struct TestMove { uint64_t at; int box; float x, y, size; };
+            static const std::vector<TestMove> test = [] {
+                std::vector<TestMove> v;
+                if (const char *e = std::getenv("GT4_HUD_MOVE_TEST"))
+                {
+                    std::string item;
+                    for (const char *c = e;; ++c)
+                    {
+                        if (*c && *c != ';')
+                        {
+                            item += *c;
+                            continue;
+                        }
+                        unsigned long long at = 0;
+                        int box = -1;
+                        float mx = 0, my = 0, ms = 100;
+                        if (std::sscanf(item.c_str(), "%llu:%d:%f,%f,%f", &at, &box, &mx, &my, &ms) == 5 && box >= 0 && box <= WidgetCount)
+                            v.push_back(TestMove{at, box, mx / 100.0f, my / 100.0f, ms / 100.0f});
+                        item.clear();
+                        if (!*c)
+                            break;
+                    }
+                }
+                return v;
+            }();
+            static size_t testAt = 0;
+            while (testAt < test.size() && s.vsync >= test[testAt].at)
+            {
+                const TestMove &tm = test[testAt++];
+                g_moved[tm.box] = Moved{true, tm.x, tm.y, std::clamp(tm.size, 0.4f, 2.5f)};
+                std::fprintf(stderr, "[gt4-hud] move test at vsync %llu\n", static_cast<unsigned long long>(s.vsync));
+                saveMoved(tm.box);
+            }
+        }
+        for (Rectangle &r : g_drawn)
+            r = Rectangle{};
         const gt4race::Car &me = s.cars[pi];
         const float H = h, m = 0.02f * H;
         float used[8] = {}; // per place, the room taken so far (stacked away from the edge; 7: bottom right, lifted)
@@ -1505,21 +1814,35 @@ namespace gt4hud
         if (t.lights && s.phase != gt4race::Phase::Finished)
         {
             const int rows = t.twoRows ? 2 : 1;
-            const float cell = 0.06f * H * (t.lightsBox ? t.lsize : 1.0f);
+            const Moved &mv = g_moved[Lights]; // (moved with the mouse: its box from then on)
+            const bool box = t.lightsBox || mv.set;
+            const float cell = 0.06f * H * (mv.set ? mv.size : t.lightsBox ? t.lsize : 1.0f);
             const float rowW = cell * static_cast<float>(t.count) + cell * 0.25f * static_cast<float>(t.count + 1), rowH = cell * static_cast<float>(rows);
             Rectangle row{x + (w - rowW) * 0.5f, y + m, rowW, rowH};
-            if (t.lightsBox)
+            if (box)
             {
                 // (GT4_START_LIGHTS_BOX: centred at its x, y in the HUD area, kept inside it)
-                row.x = std::clamp(x + t.lx * w - rowW * 0.5f, x, std::max(x, x + w - rowW));
-                row.y = std::clamp(y + t.ly * h - rowH * 0.5f, y, std::max(y, y + h - rowH));
+                const float lx = mv.set ? mv.x : t.lx, ly = mv.set ? mv.y : t.ly;
+                row.x = std::clamp(x + lx * w - rowW * 0.5f, x, std::max(x, x + w - rowW));
+                row.y = std::clamp(y + ly * h - rowH * 0.5f, y, std::max(y, y + h - rowH));
             }
             // (at the top centre, as before or in their box: the top centre's widgets go under them)
-            if (drawLights(row, t.count, s.startHold, rows) && (!t.lightsBox || (row.y < y + 0.12f * H && std::fabs(row.x + rowW * 0.5f - (x + w * 0.5f)) < 0.25f * w)))
+            const bool drawn = drawLights(row, t.count, s.startHold, rows);
+            if (drawn)
+                g_drawn[Lights] = row;
+            if (drawn && (!box || (row.y < y + 0.12f * H && std::fabs(row.x + rowW * 0.5f - (x + w * 0.5f)) < 0.25f * w)))
                 used[5] = std::max(used[5], row.y + rowH - (y + m) + m * 0.5f);
         }
+        Spec placed[WidgetCount]; // each box's spec with a mouse move applied (the new form at the moved centre and size)
+        for (int i = 0; i < WidgetCount; ++i)
+        {
+            placed[i] = t.w[i];
+            if (g_moved[i].set)
+                placed[i].xy = true, placed[i].place = 0, placed[i].x = g_moved[i].x, placed[i].y = g_moved[i].y, placed[i].size = g_moved[i].size;
+        }
         auto drawBox = [&](int i, const Rectangle &r) {
-            const Spec &sp = t.w[i];
+            const Spec &sp = placed[i];
+            g_drawn[i] = r;
             switch (i)
             {
             case Radar: drawRadar(r, sp.alpha, s, me, sp.style); break;
@@ -1538,7 +1861,7 @@ namespace gt4hud
         };
         for (int i = 0; i < WidgetCount; ++i)
         {
-            const Spec &sp = t.w[i];
+            const Spec &sp = placed[i];
             if (!sp.on)
                 continue;
             float bw = 0.0f, bh = 0.0f;
@@ -1585,5 +1908,6 @@ namespace gt4hud
             used[slot] += wh + m * 0.5f;
             drawBox(i, Rectangle{wx, wy, ww, wh});
         }
+        moveOutline(x, y, w, h);
     }
 } // namespace gt4hud

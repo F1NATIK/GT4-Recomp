@@ -41,7 +41,10 @@ void GifArbiter::drain()
     if (!m_processFn && !m_takeFn)
         return;
 
-    std::stable_sort(m_queue.begin(), m_queue.end(),
+    // (One packet, the usual case per XGKICK: nothing to order. std::stable_sort allocates its buffer on every
+    // call, ~1% of the VIF1/VU1 thread with GT4's angled side screens.)
+    if (m_queue.size() > 1u)
+        std::stable_sort(m_queue.begin(), m_queue.end(),
                      [](const GifArbiterPacket &a, const GifArbiterPacket &b)
                      {
                          // DIRECTHL cannot preempt PATH3 IMAGE transfers.

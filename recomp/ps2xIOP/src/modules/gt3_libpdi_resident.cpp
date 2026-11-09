@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/libpdi_resident.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/native_library.h"
 #include <algorithm>
 #include <mutex>
@@ -102,12 +103,12 @@ struct LibpdiResident::State {
             const auto raw=descriptor[1];
             // The general host resolver mirrors wider ranges for legacy code.
             // DMA accepts only the four explicit32MiB EE RAM windows here.
-            const bool eeRam=raw<0x2000000 || raw-0x20000000u<0x2000000 ||
-                raw-0x80000000u<0x2000000 || raw-0xa0000000u<0x2000000;
+            const bool eeRam=raw<kEeRamBytes || raw-0x20000000u<kEeRamBytes ||
+                raw-0x80000000u<kEeRamBytes || raw-0xa0000000u<kEeRamBytes;
             uint32_t destination=0;
             if (!eeRam || !chunk || count>chunk || count>filled || count>size-consumer || dma>size-consumer ||
                 !host.normalizeGuestAddress(descriptor[1],destination) || !destination || (destination&15) ||
-                destination>=0x2000000 || dma>0x2000000-destination) return {};
+                destination>=kEeRamBytes || dma>kEeRamBytes-destination) return {};
             std::vector<uint8_t> data(dma);
             if (!host.readIopMemory(ring.buffer+consumer,data.data(),data.size())) return {};
             put(actual,0x1c,(consumer+count)%size); put(actual,0x14,filled-count);

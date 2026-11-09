@@ -216,6 +216,8 @@ namespace gt4stock
         // ---- Race Lab (racelab/HANDOFF-1-RECORDER-AND-SERVER.md)
         bool raceLabRecord = false; // GT4_DRIVE_LOG: on = racelab-laps (beside gt4-start.env), off = off; F10 in a race stops and starts it
         bool raceLabDrivers = true; // GT4_AI_DRIVERS: on = racelab-data\ai-lines (the drivers the Race Lab sent), off = the AI cars keep car names
+        std::vector<uint32_t> tracksHidden; // GT4_TRACKS_HIDE: the COURSE codes Arcade leaves out (Tracks page; sorted, no repeats)
+        bool tracksUnlockAll = true;        // GT4_TRACKS_UNLOCK: Arcade offers every course, unlocked in the save or not (Tracks page)
         bool drawingSet = false; // (reading only) a GT4L_DRAWING line was read: it wins over GT3_GS_GL_FAST, which follows it
         // ---- Screen shape
         FullAspect aspect = FullAspect::Wide;
@@ -225,6 +227,12 @@ namespace gt4stock
         // The view button's views (GT4_CAM_VIEWS, MoreCams): bits bumper 1, bonnet 2, roof 4, close chase 8, chase 16, far
         // chase 32 (at least one; GT4_CAM_FAR_CHASE follows the far chase's bit for a GT4.exe from the Cameras track).
         int camViews = 0x3F;
+        // The Bonnet view's camera (GT4_CAM_BONNET, Build 69): from GT4's bonnet eye, up / back in cm and down in degrees.
+        int camBonnetUp = -8, camBonnetBack = 0, camBonnetDown = 7;
+        // Their ranges (cm, cm, degrees), as GT4.exe clamps them (gt4cam kBonnetMin / kBonnetMax). Build 70 (developer 2026-10-31,
+        // "at least double"): up/down 80 cm down to 40 cm up, forward/back 120 cm forward to 80 cm back; tilt as before.
+        static constexpr int kCamBonnetUpMin = -80, kCamBonnetUpMax = 40, kCamBonnetBackMin = -120, kCamBonnetBackMax = 80;
+        static constexpr int kCamBonnetDownMin = -5, kCamBonnetDownMax = 20;
         // The views locked to the car's tilt (GT4_CAM_LOCK, MoreCams), bits as camViews: GT4's own is bumper, bonnet, roof.
         int camLock = 0x07;
         bool look360 = true;  // GT4_CAM_LOOK 360 / off: the 360 look on the right stick
@@ -317,6 +325,23 @@ namespace gt4stock
         bool mmAngled = true;               // GT4L_NB_MM_ANGLE auto | flat | <degrees>
         bool mmAutoAngle = true;
         int mmAngleDeg = 54;
+        // Three screens' style (Screens page, developer 2026-10-30): angled sides, each its own view (GT4_SCREENS_STYLE=angled,
+        // GT4_SCREENS_ANGLE the side screens' angle in from flat), or one picture across (GT4_SCREENS_STYLE=across).
+        bool screensAngled = true;
+        int screensAngle = 60; // (the developer's rig)
+        int screensEye = 0;    // GT4_SCREENS_EYE: the eye to the middle screen in mm (0: GT4's own view, 0.65 screen widths)
+        // Per race camera (GT4_SCREENS_CAMERAS, keyed by GT4's camera: bumper, bonnet, roof, close, chase, far): field of view
+        // % of GT4's own, the side angle's trim in degrees, bezels left out or not. The Screens page's camera tab: screensCamTab.
+        struct ScreensCamera
+        {
+            int fov = 100, trim = 0;
+            bool bezels = true;
+            int upLeft = 0, upRight = 0; // the side screens' pictures up (+) / down (-), % of a screen's height
+            int tiltLeft = 0, tiltRight = 0; // the side screens' pictures tilted (Builds 54-55's up/down look), % of a screen's height
+            int zoomLeft = 100, zoomRight = 100; // the side screens' pictures zoomed in (above 100) or out, %
+        };
+        ScreensCamera screensCams[6];
+        int screensCamTab = 4;
         double mmScreenW = 698.1, mmScreenH = 392.7, mmBezel = 18.1; // mm (MSI G321Q, its data sheet)
         int mmDistanceCm = 70;              // GT4L_NB_MM_GEOMETRY=<w>,<h>,<bezel>,<distance cm>
         bool mmPanorama = false;            // GT4L_NB_MM_PANORAMA
@@ -383,6 +408,10 @@ namespace gt4stock
     // Multi-LAN Race as Play / Center, the side copies join as Monitor / Left and Right (and a top screen as Top Center
     // or Live). The copies in order: centre first, then left, right and top (when chosen).
     constexpr int kMmGt4Own = 1;
+    // GT4's race cameras for the angled triple screens' presets (gt4cam's views 0-5; GT4_SCREENS_CAMERAS).
+    constexpr int kFullScreenCameras = 6;
+    inline constexpr const char *kFullScreenCameraKeys[kFullScreenCameras] = {"bumper", "bonnet", "roof", "close", "chase", "far"};
+    inline constexpr const char *kFullScreenCameraLabels[kFullScreenCameras] = {"Bumper", "Bonnet", "Roof", "Close chase", "Chase", "Far chase"};
     struct FullMmCopy
     {
         std::string role;     // center, left, right, top

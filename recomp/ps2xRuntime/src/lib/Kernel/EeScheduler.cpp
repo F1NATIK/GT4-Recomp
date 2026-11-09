@@ -635,6 +635,12 @@ void EeScheduler::run()
                 {
                     SET_GPR_U32(&invocation.context, 29, invocationStackTop());
                 }
+                if (g_vif1LatStats && invocation.kind == GuestInvocationKind::Interrupt && getRegU32(&invocation.context, 4) == 5u)
+                {
+                    extern void vif1latNotePush();
+                    vif1latNotePush();
+                    m_vif1HandlerStartStamp = true;
+                }
                 owner->invocations.push_back(std::move(invocation));
             }
         }
@@ -704,6 +710,12 @@ void EeScheduler::run()
             if (getRegU32(&invocation.context, 29) == 0u)
             {
                 SET_GPR_U32(&invocation.context, 29, invocationStackTop());
+            }
+            if (g_vif1LatStats && invocation.kind == GuestInvocationKind::Interrupt && getRegU32(&invocation.context, 4) == 5u)
+            {
+                extern void vif1latNotePush();
+                vif1latNotePush();
+                m_vif1HandlerStartStamp = true;
             }
             running->invocations.push_back(std::move(invocation));
             continue;
@@ -775,6 +787,18 @@ void EeScheduler::run()
                     running->yieldCalls[k] = {};
             }
             PS2Runtime::exchangeEeYieldTaken(false);
+            if (m_vif1HandlerStartStamp)
+            {
+                m_vif1HandlerStartStamp = false;
+                extern void vif1latNoteHandlerStart();
+                vif1latNoteHandlerStart();
+                static int shown = 0;
+                if (shown < 3)
+                {
+                    ++shown;
+                    std::fprintf(stderr, "[vif1-worker] VIF1 handler starts at pc %08x (vsync %llu)\n", context.pc, (unsigned long long)m_vsyncTick);
+                }
+            }
             function(m_rdram, &context, &m_runtime);
             const bool yielded = PS2Runtime::exchangeEeYieldTaken(false);
             if (resumedCall && !yielded && context.pc == dispatchedPc)
@@ -1941,7 +1965,28 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
         return;
     }
     const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
-    std::vector<EeIrqHandler> matching;
+    // The matching handlers in a reused buffer (GT4's VIF1 I-bit interrupt comes ~100 times a frame; a new vector
+    // each time was an allocation per interrupt). A nested dispatch (none today: queueInvocation only queues)
+    // takes a vector of its own. The handlers' orders are unique, so the sort's result is the same either way.
+    // (GT4_IRQ_SCRATCH=1: on; off by default until its race and picture checks.)
+    static const bool scratchOn = std::getenv("GT4_IRQ_SCRATCH") && std::strcmp(std::getenv("GT4_IRQ_SCRATCH"), "1") == 0;
+    static thread_local std::vector<EeIrqHandler> scratch;
+    static thread_local bool scratchInUse = false;
+    std::vector<EeIrqHandler> nested;
+    const bool useScratch = scratchOn && !scratchInUse;
+    std::vector<EeIrqHandler> &matching = useScratch ? scratch : nested;
+    matching.clear();
+    struct ScratchGuard
+    {
+        bool active;
+        ~ScratchGuard()
+        {
+            if (active)
+                scratchInUse = false;
+        }
+    } scratchGuard{useScratch};
+    if (useScratch)
+        scratchInUse = true;
     for (const auto &[id, handler] : handlers)
     {
         (void)id;
@@ -1953,8 +1998,9 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     }
     std::sort(matching.begin(), matching.end(), [](const EeIrqHandler &left, const EeIrqHandler &right)
               { return left.order < right.order; });
-    for (const EeIrqHandler &handler : matching)
+    for (size_t i = 0; i < matching.size(); ++i)
     {
+        const EeIrqHandler handler = matching[i];
         GuestInvocation invocation{};
         invocation.kind = GuestInvocationKind::Interrupt;
         invocation.context.pc = handler.handler;

@@ -142,6 +142,9 @@ namespace gt4stock
         std::string deviceName;        // shown while it is unplugged (GT4L_WHEEL_NAME)
         std::string pedals = "wheel";  // wheel | auto | vid:pid ...
         std::string pedalsName;        // GT4L_PEDALS_NAME
+        std::string shifter = "none";  // PS2X_WHEEL_SHIFTER: none | vid:pid ... (a shifter on its own USB, the developer's Simagic)
+        std::string shifterName;       // GT4L_SHIFTER_NAME
+        std::array<int, 128> shifterButtons{}; // the shifter's buttons -> kWheelButtonKeys index (0 none)
         std::string model = "dfp";     // dfp | df | gtforce
         int rotation = 900;            // the base's own lock to lock (degrees)
         std::string steerAxis = "x";

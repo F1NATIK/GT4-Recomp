@@ -77,6 +77,7 @@
 //
 
 #include <cstdint>
+#include <string>
 
 namespace gt4hud
 {
@@ -92,4 +93,9 @@ namespace gt4hud
     int zoomPadButton();
     // The zoom button was pressed (any thread); the presenter steps the radar's range on its next race frame.
     void zoomPress();
+    // Moving boxes with the mouse (gt4_hud.cpp): whether the HUD has the mouse (a box held, or one under it last frame), so
+    // the FPS counter's drag leaves it alone; and a KEY=VALUE line put in gt4-start.env next to GT4.exe (replacing the key's
+    // line, or added; nothing when there is no such file). Presenter thread.
+    bool mouseTaken();
+    void saveStartLine(const std::string &line);
 } // namespace gt4hud

@@ -861,10 +861,12 @@ void main()
         vk = dev->device;
         g_hwnd = static_cast<HWND>(hwnd);
         g_headless = headless;
-        // (NVIDIA, or GT4_VK_PRESENT_CHILD=1: the swapchain on a child window, see makeChildWindow)
+        // (NVIDIA or AMD, or GT4_VK_PRESENT_CHILD=1: the swapchain on a child window, see makeChildWindow. AMD's
+        // 2026-10 driver (RX 9070 XT) refuses it too on a borderless full-screen OpenGL window, while a plain
+        // window works: the child window works in both, so Alt+Enter cannot lose the swapchain later.)
         {
             const char *c = std::getenv("GT4_VK_PRESENT_CHILD");
-            const bool child = c && *c ? std::strcmp(c, "1") == 0 : dev->properties.vendorID == 0x10DE;
+            const bool child = c && *c ? std::strcmp(c, "1") == 0 : (dev->properties.vendorID == 0x10DE || dev->properties.vendorID == 0x1002);
             if (child)
             {
                 g_parent = g_hwnd;

@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/pdistr_mpeg_ring.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/gt3/pdistr_startup_image.h"
 #include <algorithm>
 #include <atomic>
@@ -16,8 +17,8 @@ uint32_t word(std::span<const uint8_t> bytes,size_t offset) {
 }
 bool eeSpan(uint32_t raw,uint32_t size,uint32_t& physical) {
     for (uint32_t base:{0u,0x20000000u,0x80000000u,0xa0000000u})
-        if (raw>=base && uint64_t(raw)-base<0x2000000) {
-            physical=raw-base; return physical && !(physical&15) && size<=0x2000000-physical;
+        if (raw>=base && uint64_t(raw)-base<kEeRamBytes) {
+            physical=raw-base; return physical && !(physical&15) && size<=kEeRamBytes-physical;
         }
     return false;
 }

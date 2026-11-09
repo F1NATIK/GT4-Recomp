@@ -91,6 +91,8 @@ namespace gt4stock
         RaceLab, // Race Lab (racelab/HANDOFF-1): the lap recorder and the Race Lab page on this PC
         RaceHud, // Driving > Race HUD (HUD hand-off 7): the HUD layout page
         Telemetry, // Driving > Telemetry screen (HUD hand-off 8): the monitor, the phone and their layouts
+        Tracks,    // Your game > Tracks (analysis/design/tracks): which courses Arcade lists (GT4_TRACKS_HIDE)
+        RaceCameras, // Driving > Race cameras (developer 2026-10-30: was Display > Cameras)
 #endif
     };
 
@@ -285,12 +287,13 @@ namespace gt4stock
         std::vector<int> displayTabsShown() const;
         void displayPicture(float x0, float y0, float x1, float y1);
         void displayResolution(float x0, float y0, float x1, float y1);
-        void displayShape(float x0, float y0, float x1, float y1);
+        float displayShape(float x0, float y0, float x1, float y1); // (the Screens page's Display card: its bottom)
         float displayCars(float x, float y, float w); // Display > Graphics: the Cars card (car and wheel detail); its bottom
         void displaySmoothness(float x0, float y0, float x1, float y1);
         void displayDetail(float x0, float y0, float x1, float y1);
         void displayHud(float x0, float y0, float x1, float y1);
         void displayCameras(float x0, float y0, float x1, float y1);
+        void pageRaceCameras(); // Driving > Race cameras: displayCameras as a page of its own
         // Why the 360 look cannot have the right stick with this controller mapping (Controllers > Controller: GT4's right
         // stick fed by something other than the controller's right stick); empty when it can.
         std::string cameraLookBlock() const;
@@ -351,6 +354,8 @@ namespace gt4stock
         int soundCarPick_ = 0;                 // per car: the garage car the list adds
         void pageRoadmap();  // Roadmap: what is coming (a plain list)
         void pageRaceLab();  // Race Lab: record laps, open the Race Lab page (gt4RaceLab.exe)
+        void pageTracks();   // Tracks: which courses Arcade lists (gt4full_tracks.cpp)
+        bool tracksAdded();  // the extras pack beside GT4.exe carries the added courses (read once)
         // Driving > Race HUD > HUD layout (gt4full_racehud.cpp; HUD hand-off 7 A2): the race picture with GT4's parts and our
         // boxes, dragged where the player wants them.
         // Driving > Telemetry screen (gt4full_telemetry.cpp; HUD hand-off 8): the telemetry monitor, the phone's QR code and
@@ -382,6 +387,22 @@ namespace gt4stock
         bool raceHudArt(int course);
         int hudArtCourse_ = -1;
         Texture2D hudArt_{};
+        Texture2D lineupTex_{};   // the Screens page's lineup picture of the camera shown (screens-lineup\<camera>.png)
+        std::string lineupKey_;   // its file and time
+        std::string liveWritten_; // the live settings last written for GT4 (screens-live.txt)
+        std::string cameraLiveWritten_; // the bonnet camera's live line last written (camera-live.txt)
+        std::string gt4CameraNow_; // the camera GT4 reported (screens-lineup\current.txt)
+        uint64_t liveFrames_ = 0;
+        float screensCameras(float x0, float y0, float x1); // the Screens page's per-camera presets (gt4full_pages.cpp): its bottom
+        bool lineupZoom_ = false; // the lineup picture enlarged over the page, with its bezel seams magnified
+        // Wheel > Buttons > Shift up / Shift down: the slot waiting for a wheel button (0, 1 up; 2, 3 down; -1 none), armed
+        // once every button is released
+        int shiftCapture_ = -1;
+        bool shiftArmed_ = false;
+        // Screens > Get screen specs: what the three monitors said (shown first), and the sizes Apply would set (gap < 0: kept)
+        std::string screensSpec_;
+        bool screensSpecReady_ = false;
+        double screensSpecW_ = 0, screensSpecH_ = 0, screensSpecGap_ = -1;
         float hudArtW_ = 0, hudArtH_ = 0;
         std::vector<Vector2> hudArtLine_;
         // Driving > Race HUD's pages (HUD hand-off 7 D, E): 0 HUD layout, 1 Radar, 2 Start lights (gt4full_racehud.cpp), 3 Timing
@@ -431,7 +452,7 @@ namespace gt4stock
         void adjustFullLaunch(sys::Launch &l) const; // the values this GT4 program understands
         // GT4's own Multi Monitor Mode (Multi-screen; gt4full_app.cpp): one GT4 copy per screen, the middle one started as
         // Play does, the side ones (mmSideLaunches) right after it and closed with it.
-        bool mmOwnChosen() const { return st_.full.mmMode == kMmGt4Own; }
+        bool mmOwnChosen() const { return false; } // (gone, developer 2026-10-30: it ran at 30 fps; three screens is GT4_SCREENS=3)
         bool mmOwnLive() const; // chosen, this GT4 program has it, and at least one side screen was found
         // The monitor of a copy: the middle one is Display > Screen shape's; left / right right next to it (half its height
         // shared), top right above it. Null when there is none.

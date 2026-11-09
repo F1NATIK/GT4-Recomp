@@ -109,7 +109,15 @@ namespace gt4mirror
         }
     } // namespace
     void stillAsked() { g_stillAt.store(nowMs(), std::memory_order_relaxed); }
-    bool wanted() { return g_viewers.load(std::memory_order_relaxed) > 0 || nowMs() - g_stillAt.load(std::memory_order_relaxed) < 2000; }
+    bool wanted()
+    {
+        // (called for every primitive drawn: the clock only once a still was asked for - reading it each time was ~10% of
+        // the GS GL thread on a busy course, analysis/design/tracks 2026-10-29)
+        if (g_viewers.load(std::memory_order_relaxed) > 0)
+            return true;
+        const int64_t at = g_stillAt.load(std::memory_order_relaxed);
+        return at != INT64_MIN / 2 && nowMs() - at < 2000;
+    }
 
     namespace
     {

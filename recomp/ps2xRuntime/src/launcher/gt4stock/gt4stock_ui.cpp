@@ -154,6 +154,10 @@ namespace gt4stock::ui
         in_ = input;
         inputBlocked_ = false;
         consumedClick_ = false;
+        auditBoxes_.clear();
+        auditLayer_ = 0;
+        auditOwner_ = Rectangle{};
+        auditPaused_ = false;
         // A press on an open drop-down list belongs to the list.
         if (!openDropdown_.empty() && in_.enabled && in_.pressed)
         {
@@ -186,6 +190,7 @@ namespace gt4stock::ui
     {
         if (openDropdown_.empty())
             return;
+        auditPaused_ = true; // (the open list is drawn over everything on purpose)
         const Theme &t = theme();
         const float rowH = std::max(26.0f, dropTextSize_ * 2.0f);
         int rows = 0;
@@ -236,7 +241,110 @@ namespace gt4stock::ui
         return Rectangle{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
     }
 
-    void Ui::fill(Rectangle r, Color c) { DrawRectangleRec(px(r), c); }
+    void Ui::fill(Rectangle r, Color c)
+    {
+        DrawRectangleRec(px(r), c);
+        if (audit_ && r.x <= 0.5f && r.y <= 0.5f && r.x + r.width >= width - 0.5f && r.y + r.height >= height - 0.5f)
+            ++auditLayer_; // a dialog's dimming over the whole window: what follows is drawn over the page
+    }
+
+    void Ui::auditAdd(Rectangle r, AuditKind kind, const std::string &what)
+    {
+        if (!audit_ || auditPaused_ || r.width <= 0.0f || r.height <= 0.0f)
+            return;
+        auditBoxes_.push_back(AuditBox{r, kind, clip_, auditOwner_, auditLayer_, what});
+    }
+
+    namespace
+    {
+        bool inside(Rectangle a, Rectangle b, float tol) // a within b
+        {
+            return a.x >= b.x - tol && a.y >= b.y - tol && a.x + a.width <= b.x + b.width + tol && a.y + a.height <= b.y + b.height + tol;
+        }
+        float overlapArea(Rectangle a, Rectangle b)
+        {
+            const float w = std::min(a.x + a.width, b.x + b.width) - std::max(a.x, b.x);
+            const float h = std::min(a.y + a.height, b.y + b.height) - std::max(a.y, b.y);
+            return w > 0.0f && h > 0.0f ? w * h : 0.0f;
+        }
+        std::string shortText(const std::string &t)
+        {
+            return t.size() > 48 ? t.substr(0, 45) + "..." : t;
+        }
+    }
+
+    std::vector<std::string> Ui::auditIssues() const
+    {
+        std::vector<std::string> out;
+        auto add = [&](const std::string &s) {
+            if (std::find(out.begin(), out.end(), s) == out.end())
+                out.push_back(s);
+        };
+        // Only what is fully shown: something crossing a scrolling area's edge is scrolled, not cut.
+        auto shown = [](const AuditBox &b) { return b.clip.width <= 0.0f || inside(b.r, b.clip, 0.5f); };
+        auto label = [](const AuditBox &b) {
+            return std::string(b.kind == AuditKind::Text ? "text \"" + shortText(b.what) + "\"" : b.kind == AuditKind::Card ? "card \"" + b.what + "\"" : "control " + b.what);
+        };
+        for (const AuditBox &b : auditBoxes_)
+        {
+            if (!shown(b))
+                continue;
+            if (b.clip.width <= 0.0f && (b.r.y + b.r.height > height + 0.5f || b.r.x + b.r.width > width + 0.5f))
+                add(label(b) + " runs off the window (no scrolling here)");
+            if (b.kind == AuditKind::Card)
+            {
+                for (const AuditBox &o : auditBoxes_)
+                    if (&o != &b && o.kind == AuditKind::Card && o.layer == b.layer && shown(o) && &o > &b && overlapArea(b.r, o.r) > 1.0f &&
+                        !inside(b.r, o.r, 0.5f) && !inside(o.r, b.r, 0.5f))
+                        add("cards \"" + b.what + "\" and \"" + o.what + "\" overlap");
+                continue;
+            }
+            if (b.kind == AuditKind::Text && b.owner.width > 0.0f)
+            {
+                if (b.r.x < b.owner.x - 1.0f || b.r.x + b.r.width > b.owner.x + b.owner.width + 1.0f)
+                    add(label(b) + " is wider than its box");
+                continue;
+            }
+            // Its card: the one it overlaps most on its layer.
+            // (a card in a scrolling area counts as the part of it shown)
+            auto shownPart = [](const AuditBox &c) {
+                if (c.clip.width <= 0.0f)
+                    return c.r;
+                const float x0 = std::max(c.r.x, c.clip.x), y0 = std::max(c.r.y, c.clip.y);
+                const float x1 = std::min(c.r.x + c.r.width, c.clip.x + c.clip.width), y1 = std::min(c.r.y + c.r.height, c.clip.y + c.clip.height);
+                return Rectangle{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
+            };
+            const AuditBox *card = nullptr;
+            float best = 0.0f;
+            for (const AuditBox &o : auditBoxes_)
+                if (o.kind == AuditKind::Card && o.layer == b.layer)
+                {
+                    const float a = overlapArea(b.r, shownPart(o));
+                    if (a > best)
+                        best = a, card = &o;
+                }
+            if (card && !inside(b.r, card->r, 1.5f))
+                add(label(b) + " sticks out of card \"" + card->what + "\"");
+        }
+        // Text under a control or under other text (on one layer, both shown, not text drawn on a control).
+        for (size_t i = 0; i < auditBoxes_.size(); ++i)
+        {
+            const AuditBox &a = auditBoxes_[i];
+            if (a.kind != AuditKind::Text || a.owner.width > 0.0f || !shown(a))
+                continue;
+            for (size_t j = 0; j < auditBoxes_.size(); ++j)
+            {
+                const AuditBox &b = auditBoxes_[j];
+                if (i == j || b.layer != a.layer || !shown(b))
+                    continue;
+                if (b.kind == AuditKind::Control && overlapArea(a.r, b.r) > 4.0f)
+                    add(label(a) + " is under " + label(b));
+                else if (b.kind == AuditKind::Text && b.owner.width <= 0.0f && j > i && overlapArea(a.r, b.r) > 8.0f)
+                    add(label(a) + " overlaps " + label(b));
+            }
+        }
+        return out;
+    }
 
     void Ui::round(Rectangle r, float radius, Color c)
     {
@@ -484,6 +592,17 @@ namespace gt4stock::ui
             L(6, -7, 9, -6);
             L(9, -6, 7, -2);
             break;
+        case Icon::Track: // a circuit's outline: a long straight, a hairpin and two bends
+            L(-9, 7, 6, 7);
+            L(6, 7, 9, 4);
+            L(9, 4, 8, 1);
+            L(8, 1, 1, -1);
+            L(1, -1, 3, -6);
+            L(3, -6, 0, -9);
+            L(0, -9, -5, -8);
+            L(-5, -8, -9, -2);
+            L(-9, -2, -9, 7);
+            break;
 #endif
         }
     }
@@ -535,6 +654,8 @@ namespace gt4stock::ui
         else if (a == Align::Right)
             left = x - widthDp;
         DrawTextEx(f, t.c_str(), Vector2{std::round(left * s), std::round(y * s)}, pxSize, 0.0f, c);
+        if (audit_ && c.a > 0)
+            auditAdd(Rectangle{left, y + size * 0.1f, widthDp, size * 1.05f}, AuditKind::Text, str);
         return widthDp;
     }
 
@@ -758,6 +879,13 @@ namespace gt4stock::ui
             round(r, radius, bg);
         if (style == Style::Secondary || (!enabled && style != Style::Ghost))
             roundLine(r, radius, 1.0f, edge);
+        auditAdd(r, AuditKind::Control, "button \"" + label + "\"");
+        struct Owner
+        {
+            Rectangle &o, before;
+            Owner(Rectangle &slot, Rectangle r) : o(slot), before(slot) { o = r; }
+            ~Owner() { o = before; }
+        } owner(auditOwner_, r);
         const bool hasIcon = static_cast<int>(ic) >= 0;
         const float iconSize = textSize * 1.25f;
         const float labelW = textWidth(label, textSize, Weight::Semibold);
@@ -776,6 +904,7 @@ namespace gt4stock::ui
     {
         const Theme &t = theme();
         const Rectangle r{x, y, 40.0f, 22.0f};
+        auditAdd(r, AuditKind::Control, "toggle");
         const bool hot = enabled && hovered(r);
         Color track = value ? t.accent : t.panel3;
         if (!enabled)
@@ -805,7 +934,12 @@ namespace gt4stock::ui
             roundLine(box, 5.0f, 1.0f, t.border);
         else
             icon(Icon::Check, Rectangle{x + 2.0f, y + 2.0f, 16.0f, 16.0f}, WHITE);
+        const Rectangle drawn{x, y, 28.0f + labelW, 20.0f}; // (the box and its label as drawn: the click area reaches a little further)
+        auditAdd(drawn, AuditKind::Control, "checkbox \"" + label + "\"");
+        const Rectangle before = auditOwner_;
+        auditOwner_ = Rectangle{drawn.x, drawn.y - 2.0f, drawn.width + 2.0f, drawn.height + 4.0f};
         text(label, x + 28.0f, y + 1.0f, 14.0f, enabled ? t.text : t.faint);
+        auditOwner_ = before;
         if (enabled && clicked(hit))
         {
             value = !value;
@@ -821,6 +955,7 @@ namespace gt4stock::ui
         const Rectangle track{r.x, cy - 3.0f, r.width, 6.0f};
         const float frac = hi > lo ? std::clamp((value - lo) / (hi - lo), 0.0f, 1.0f) : 0.0f;
         const Color fc = fillColor.a ? fillColor : (enabled ? t.accent : t.accentDim);
+        auditAdd(Rectangle{r.x - 10.0f, r.y, r.width + 20.0f, r.height}, AuditKind::Control, "slider " + id); // (with its knob's reach)
         round(track, 3.0f, t.panel3);
         round(Rectangle{track.x, track.y, track.width * frac, track.height}, 3.0f, fc);
         const float kx = r.x + r.width * frac;
@@ -864,11 +999,14 @@ namespace gt4stock::ui
         const Theme &t = theme();
         round(r, 8.0f, t.panel2);
         roundLine(r, 8.0f, 1.0f, t.border);
+        auditAdd(r, AuditKind::Control, "segmented (" + (options.empty() ? std::string() : options[0]) + ", ...)");
+        const Rectangle ownerBefore = auditOwner_;
         const float w = r.width / static_cast<float>(std::max<size_t>(1, options.size()));
         bool changed = false;
         for (size_t i = 0; i < options.size(); ++i)
         {
             const Rectangle cell{r.x + w * static_cast<float>(i) + 3.0f, r.y + 3.0f, w - 6.0f, r.height - 6.0f};
+            auditOwner_ = cell;
             const bool sel = static_cast<int>(i) == selected;
             const bool hot = enabled && hovered(cell);
             if (sel)
@@ -888,6 +1026,7 @@ namespace gt4stock::ui
                 changed = true;
             }
         }
+        auditOwner_ = ownerBefore;
         return changed;
     }
 
@@ -910,7 +1049,11 @@ namespace gt4stock::ui
         round(r, 8.0f, enabled ? (hot || open ? t.panel3 : t.panel2) : t.panel);
         roundLine(r, 8.0f, 1.0f, open ? t.accent : t.border);
         const std::string label = selected >= 0 && selected < static_cast<int>(options.size()) ? options[static_cast<size_t>(selected)] : "-";
+        auditAdd(r, AuditKind::Control, "dropdown " + id);
+        const Rectangle ownerBefore = auditOwner_;
+        auditOwner_ = r;
         text(fit(label, r.width - 40.0f, textSize), r.x + 12.0f, r.y + (r.height - textSize * 1.33f) * 0.5f, textSize, enabled ? t.text : t.faint);
+        auditOwner_ = ownerBefore;
         // chevron
         const float ax = r.x + r.width - 18.0f, ay = r.y + r.height * 0.5f;
         line(ax - 5.0f, ay - 2.5f, ax, ay + 2.5f, 1.8f, enabled ? t.muted : t.faint);
@@ -946,6 +1089,7 @@ namespace gt4stock::ui
     bool Ui::rowButton(const std::string &, Rectangle r, bool selected, bool enabled)
     {
         const Theme &t = theme();
+        auditAdd(r, AuditKind::Row, "row");
         const bool hot = enabled && hovered(r);
         if (selected)
         {
@@ -960,6 +1104,7 @@ namespace gt4stock::ui
     void Ui::card(Rectangle r, const std::string &title, const std::string &note)
     {
         const Theme &t = theme();
+        auditAdd(r, AuditKind::Card, title.empty() ? std::string("(untitled)") : title);
         round(r, 12.0f, t.panel);
         roundLine(r, 12.0f, 1.0f, alpha(t.border, 0.8f));
         if (!title.empty())

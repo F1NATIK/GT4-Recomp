@@ -139,7 +139,7 @@ namespace gt4stock
         const Color line = ink ? Color{205, 209, 216, 255} : t.border, box = ink ? Color{243, 246, 250, 255} : t.panel2, block = ink ? WHITE : t.panel;
         const CheatSettings cs = cheatsInEffect(st_.cheats, gt4_);
         auto does = [&](const gt4cheats::Code &c) { return cheatSheetDoes(c, cs); };
-        const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"Skip the 365-day wait\" switch). Any "
+        const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"No 365-day wait for codes\" switch). Any "
                                   "controller. Tap each button once, in order; a wrong button starts the code over. The hidden Options code needs "
                                   "controller 2 (or the launcher's \"Let controller 1 type the hidden menu code\" switch).";
         struct SheetFit
@@ -269,7 +269,7 @@ namespace gt4stock
             ui::Input none;
             ui_.begin(paper.widthPx, paper.heightPx, none);
             const float W = ui_.width, m = 77.4f, inner = W - 2 * m - 31;
-            const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"Skip the 365-day wait\" switch). Any "
+            const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"No 365-day wait for codes\" switch). Any "
                                       "controller. Tap each button once, in order; a wrong button starts the code over. The hidden Options code needs "
                                       "controller 2 (or the launcher's \"Let controller 1 type the hidden menu code\" switch).";
             const float limit = ui_.height - 90;
@@ -314,7 +314,7 @@ namespace gt4stock
                     ui_.text("GT4 cheat sheet", m + 82.6f, 64, 41.3f, inkc, Weight::Bold);
                     ui_.text("Gran Turismo 4 (USA, SCUS-97328)" + std::string(kDot) + "from GT4 Recompilation" + kDot + "printed " + date, m + 83.6f, 114.6f, 17.5f, sub);
                     y = 160;
-                    const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"Skip the 365-day wait\" switch). Any "
+                    const std::string rules = "The five GT Mode codes need Day 367 or later on GT4's Days counter (or the launcher's \"No 365-day wait for codes\" switch). Any "
                                               "controller. Tap each button once, in order; a wrong button starts the code over. The hidden Options code needs "
                                               "controller 2 (or the launcher's \"Let controller 1 type the hidden menu code\" switch).";
                     const float rh = ui_.wrapHeight(rules, W - 2 * m - 31, 17, Weight::Regular, 1.3f) + 25;

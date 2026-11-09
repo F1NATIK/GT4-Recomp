@@ -50,6 +50,10 @@ namespace gsgl
     // 1080i race reuse them). The Vulkan presentation image follows it too.
     void setPresentRows(uint32_t rows);
     uint32_t presentRows();
+    // Worker: pictures side by side in the next slot (GT4's angled triple screens: 3, the side screens' views either side
+    // of the middle one; 1 otherwise), before beginPresentSlot. The Vulkan presentation image is that many times as wide.
+    void setPresentWide(int pictures);
+    int presentWide();
     // Worker: the frame in that slot is complete (width x height of it valid).
     void endPresentSlot(uint32_t width, uint32_t height);
     // Host: copies the newest published frame into dstTexture (dstWidth x

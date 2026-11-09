@@ -41,6 +41,11 @@
 #include <mutex>
 #include <thread>
 #endif
+// PGO training builds (-fprofile-generate -DPS2X_PGO_GENERATE): main's std::_Exit skips the profile runtime's
+// atexit write, so the profile is written just before it.
+#ifdef PS2X_PGO_GENERATE
+extern "C" int __llvm_profile_write_file(void);
+#endif
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -711,6 +716,9 @@ int main(int argc, char *argv[])
 #endif
         std::cout.flush();
         std::cerr.flush();
+#ifdef PS2X_PGO_GENERATE
+        std::cerr << "[pgo] profile written: " << (__llvm_profile_write_file() == 0 ? "yes" : "FAILED") << std::endl;
+#endif
         std::_Exit(0);
     }
     catch (const std::exception &e)

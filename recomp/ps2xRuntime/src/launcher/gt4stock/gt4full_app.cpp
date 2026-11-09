@@ -53,7 +53,7 @@ namespace gt4stock
         std::string s = replaced(md, "A Vulkan renderer works in a separate test build, matched just as closely in the scenes tried, and is being added as an option; the Classic edition uses OpenGL.",
                                  "A Vulkan renderer is matched just as closely in the scenes tried: GT4 draws with it, with OpenGL there for graphics cards where Vulkan has trouble.");
         s = replaced(s, "GT4 Recompilation, Classic edition, a small program that starts GT4.exe with your settings. Pages: Play, Display (scanline filter), Controllers (pad, wheel, pedals, player 2, EyeToy webcam), Saves (cards, backups, photo folder, Save details), Cheats and About.",
-                     "the GT4 Recompilation launcher, a small program that starts GT4.exe with your settings. Pages: Play, Display (picture, screen shape, renderer and more), Sound (engine bass, sound packs), Controllers (pad, wheel, pedals, player 2, EyeToy webcam), Saves (cards, backups, photo folder, Game progress and save details), Garage, Cheats, Multi-screen, Race Lab, Network/Online and About.");
+                     "the GT4 Recompilation launcher, a small program that starts GT4.exe with your settings. Pages: Play, Display (picture, resolution, renderer and more), Sound (engine bass, sound packs), Controllers (pad, wheel, pedals, player 2, EyeToy webcam), Saves (cards, backups, photo folder, Game progress and save details), Garage, Cheats, Screens (one monitor or three), Race Lab, Network/Online and About.");
         return s;
     }
 
@@ -71,7 +71,7 @@ namespace gt4stock
             full_ = FullFeatures{};
             full_.read = true;
             full_.raceMode = full_.raceColour = full_.aspect = full_.bicubic = full_.lanczos = full_.vulkan = full_.renderer = full_.squarePixels =
-                full_.span = full_.exclusive = full_.net = full_.engineBass = full_.fpsCounter = full_.fpsStats = full_.internalRes = full_.wideShapes = full_.cameras = full_.moreCameras = full_.hud = full_.detail = full_.screens = full_.multiMonitor = full_.lut = full_.texSmooth = full_.texDump = full_.rendererAuto = full_.extraCars = full_.soundPacks = true;
+                full_.span = full_.exclusive = full_.net = full_.engineBass = full_.fpsCounter = full_.fpsStats = full_.internalRes = full_.wideShapes = full_.cameras = full_.moreCameras = full_.hud = full_.detail = full_.screens = full_.multiMonitor = full_.lut = full_.texSmooth = full_.texDump = full_.rendererAuto = full_.extraCars = full_.soundPacks = full_.tracks = true;
             st_.full.prepared = exeStamp() + " ok";
         }
         st_.full.soundMapFile = pathText(soundPacksFolder() / "cars.txt"); // Sound packs: the per-car map file GT4.exe reads
@@ -153,14 +153,22 @@ namespace gt4stock
     {
         // Multi-screen: a release build shows it only for a GT4 program that has three screens (its marker, full_.screens);
         // everything else on it is not built yet.
+        // Screens (developer 2026-10-30): always, since one screen's monitor, window and shape are on it; three screens is greyed
+        // for a GT4 program without them.
         if (p == Page::Multiscreen)
-            return showUnbuilt_ || full_.screens;
+            return true;
         // Race HUD (HUD hand-off 7): with a GT4 program that draws our own widgets (its marker), as Display > HUD was.
         if (p == Page::RaceHud)
             return showUnbuilt_ || (full_.read && full_.hud);
         // Telemetry screen (HUD hand-off 8): with a GT4 program that has the pages service and our own HUD (the same marker).
         if (p == Page::Telemetry)
             return showUnbuilt_ || (full_.read && full_.hud);
+        // Tracks (analysis/design/tracks): with a GT4 program that reads GT4_TRACKS_HIDE (gt4_tracks.cpp).
+        if (p == Page::Tracks)
+            return showUnbuilt_ || (full_.read && full_.tracks);
+        // Race cameras (developer 2026-10-30: moved from Display > Cameras): with a GT4 program that has the race cameras (its marker).
+        if (p == Page::RaceCameras)
+            return showUnbuilt_ || (full_.read && full_.cameras);
         return true;
     }
 
@@ -541,14 +549,16 @@ namespace gt4stock
         };
         const Item items[] = {{Page::Play, Icon::Play, "Play"},
                               {Page::Display, Icon::Display, "Display", "PICTURE AND SOUND"},
+                              {Page::Multiscreen, Icon::Screens, "Screens"},
                               {Page::Sound, Icon::Speaker, "Sound"},
-                              {Page::Multiscreen, Icon::Screens, "Multi-screen"},
                               {Page::Controllers, Icon::Gamepad, "Controllers", "DRIVING"},
+                              {Page::RaceCameras, Icon::Display, "Race cameras"},
                               {Page::RaceHud, Icon::Eye, "Race HUD"},
                               {Page::Telemetry, Icon::Screens, "Telemetry screen"},
                               {Page::Cheats, Icon::Sparkle, "Cheats"},
                               {Page::Saves, Icon::Card, "Saves", "YOUR GAME"},
                               {Page::Garage, Icon::Garage, "Garage"},
+                              {Page::Tracks, Icon::Track, "Tracks"},
                               {Page::RaceLab, Icon::Trophy, "Race Lab", "RACING TOGETHER"},
                               {Page::Network, Icon::Network, "Network/Online"},
                               {Page::About, Icon::Info, "About", ""}};
@@ -557,9 +567,11 @@ namespace gt4stock
         for (const Item &it : items)
             if (pageVisible(it.page))
                 shown += 1, sections += it.section ? 1 : 0;
-        const float head = 24.0f;
-        // (32 at the least: thirteen pages with Telemetry screen still fit an 800-high window above the status rows)
-        const float step = std::clamp((H - 142 - 24 - 100 - sections * head) / static_cast<float>(std::max(shown, 8)), 32.0f, 46.0f);
+        // The section headings shrink first (24 down to 14), then the rows (to 26 at the least), so the pages stay above the
+        // status rows (2026-10-30: with Race cameras the 32-high rows put About over them in an 800-high window).
+        const float avail = H - 142 - 24 - 100;
+        const float head = sections ? std::clamp((avail - shown * 32.0f) / static_cast<float>(sections), 14.0f, 24.0f) : 24.0f;
+        const float step = std::clamp((avail - sections * head) / static_cast<float>(std::max(shown, 8)), 26.0f, 46.0f);
         for (const Item &it : items)
         {
             if (!pageVisible(it.page))
@@ -567,7 +579,7 @@ namespace gt4stock
             if (it.section)
             {
                 if (*it.section)
-                    ui_.text(it.section, 32, y + 8, 11.5f, t.faint, Weight::Semibold);
+                    ui_.text(it.section, 32, y + head - 16, 11.5f, t.faint, Weight::Semibold);
                 else
                     ui_.fill(R(28, y + head * 0.5f, kSidebarW - 56, 1), t.border);
                 y += head;

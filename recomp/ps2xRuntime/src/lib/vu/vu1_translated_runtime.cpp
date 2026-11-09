@@ -10,6 +10,38 @@ namespace ps2vu1t
         // The interpreter commits every cycle: the flag entries due that cycle
         // (issue order), then FDIV, then the EFU slots. Replay the due cycles in
         // order.
+        if (c.qPending && !c.efuValid[0] && !c.efuValid[1])
+        {
+            // Flags and Q only (the renderers' DIV per vertex; the loop below was ~14% of the VU1 run time):
+            // the flag entries due by Q's cycle (and upTo) in issue order, then Q, then the flags-only case.
+            // The same order as the loop below.
+            VU1State &s = *c.s;
+            const uint64_t flagsBy = std::min(c.qReady, upTo);
+            while (c.flagHead != c.flagTail && c.flags[c.flagHead % Ctx::kFlagRing].ready <= flagsBy)
+            {
+                const FlagEntry &e = c.flags[c.flagHead++ % Ctx::kFlagRing];
+                if (e.writes & kWriteMac)
+                    s.mac = e.mac;
+                if (e.writes & kWriteStatus)
+                {
+                    const uint32_t current = e.status & 0xFu;
+                    s.status = (s.status & 0xFF0u) | current | ((current | e.extraSticky) << 6);
+                }
+                if (e.writes & kWriteSticky)
+                    s.status = (s.status & 0x03Fu) | (e.status & 0xFC0u);
+                if (e.writes & kWriteClip)
+                    s.clip = e.clip;
+            }
+            if (c.qReady > upTo)
+            {
+                c.nextCommit = c.flagHead != c.flagTail ? std::min(c.qReady, c.flags[c.flagHead % Ctx::kFlagRing].ready) : c.qReady;
+                return;
+            }
+            s.q = c.qValue;
+            const uint32_t currentDi = c.qDi & 0x30u;
+            s.status = (s.status & 0xFCFu) | currentDi | (currentDi << 6);
+            c.qPending = false;
+        }
         if (!c.qPending && !c.efuValid[0] && !c.efuValid[1])
         {
             // Only flag entries (ready cycles in issue order): apply the due ones.
@@ -145,6 +177,13 @@ namespace ps2vu1t
     {
         commit(c);
         c.workingClip = clip & 0xFFFFFFu;
+#if defined(PS2X_VU1T_TRACK)
+        if (c.track)
+        {
+            c.regWritten[2] |= kTrackClip;
+            c.clipShifts = 4u; // (the whole register set: the input's bits are gone)
+        }
+#endif
         for (uint32_t k = c.flagHead; k != c.flagTail; ++k)
         {
             FlagEntry &e = c.flags[k % Ctx::kFlagRing];
@@ -175,6 +214,7 @@ namespace ps2vu1t
             }
             const uint32_t qwordOffset = k.copied;
             const uint32_t start = (k.source + k.copied) % kDataSize;
+            VU1T_MRD(c, start, 0xFu); // (XGKICK reads VU memory too: tracking)
             std::memcpy(k.packet + k.copied, c.mem + start, 16u); // start is qword aligned
             k.copied += 16u;
             if (k.tagEnd == 0u)
@@ -245,6 +285,11 @@ namespace ps2vu1t
                 {
                     const uint32_t start = (k.source + k.copied) % kDataSize;
                     const uint32_t run = std::min(bulk - done, (kDataSize - start) / 16u);
+#if defined(PS2X_VU1T_TRACK)
+                    if (c.track)
+                        for (uint32_t q = 0; q < run; ++q)
+                            trackMemRead(c, start + q * 16u, 0xFu);
+#endif
                     std::memcpy(k.packet + k.copied, c.mem + start, static_cast<size_t>(run) * 16u);
                     k.copied += run * 16u;
                     k.nextCopy += 2ull * run;
@@ -273,6 +318,11 @@ namespace ps2vu1t
 
     void finish(Ctx &c)
     {
+        // (tracking: a clip register shifted fewer than four times still holds some of the input's bits)
+#if defined(PS2X_VU1T_TRACK)
+        if (c.track && c.clipShifts > 0u && c.clipShifts < 4u)
+            c.regRead[2] |= kTrackClip;
+#endif
         uint64_t end = c.cycle;
         if (c.kick.active)
             end = std::max(end, kickFinish(c));

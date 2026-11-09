@@ -16,6 +16,13 @@ namespace vif1lat
     extern std::atomic<uint64_t> raiseNs, drainSum;
 }
 
+// The last GT4 HUD marker ('HUDP' A+D to GS register 0x7f, gt4_hud_pictures.cpp) a VIF1 DIRECT carried, as the VIF1/VU1
+// thread met it: the VU1 kick recorder tags kicks with it (the triple screens' passes, analysis/design/triple-60fps).
+namespace vif1markers
+{
+    std::atomic<uint32_t> last{0u};
+}
+
 namespace
 {
 // UNPACK fast path (see executeVIF1Commands): contiguous writes of `count`
@@ -260,6 +267,10 @@ void PS2Memory::processVifInput(uint32_t channel, const uint8_t *data, uint32_t 
             m_pendingVifInterrupts.fetch_or(1u << channel);
             if (channel == 1u)
                 vif1lat::noteRaise();
+            // (A stalling I-bit on the worker thread: the EE is told now, not when the run returns. Its handler's
+            // VIF1 register reads still wait for the worker to park, so they see the same state.)
+            if (channel == 1u && (regs.stat & (1u << 10)) && m_vif1StallNudge && m_vif1Worker.onWorkerThread())
+                m_vif1StallNudge(m_vif1StallNudgeUser);
             if (channel == 1u && (regs.stat & (1u << 10)) && ps2_graphics_trace::dmaStats().enabled) ++ps2_graphics_trace::dmaStats().vif1Istall;
             ps2_graphics_trace::record(0x30u + channel, command, reinterpret_cast<const uint8_t *>(&regs.stat), 4u, gs_regs.vsyncTick.load());
             ps2_graphics_trace::dmaTrace(gs_regs.vsyncTick.load(), "vif-irq ch%u cmd=%08x stat=%x remaining=%u", channel, command, regs.stat,
@@ -925,6 +936,14 @@ void PS2Memory::executeVIF1Commands(const uint8_t *data, uint32_t sizeBytes)
             if (qwCount > 0)
             {
                 const bool directHl = (opcode == VIF_DIRECTHL);
+                if (qwCount == 2u && data[pos + 24] == 0x7fu) // (a marker: tag, then value + register 0x7f)
+                {
+                    uint32_t sig = 0, code = 0;
+                    std::memcpy(&code, data + pos + 16, 4);
+                    std::memcpy(&sig, data + pos + 20, 4);
+                    if (sig == 0x48554450u)
+                        vif1markers::last.store(code, std::memory_order_relaxed);
+                }
                 submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
 
                 const uint32_t imageQw = gifImageQwcFromTag(data + pos, qwCount * 16u);

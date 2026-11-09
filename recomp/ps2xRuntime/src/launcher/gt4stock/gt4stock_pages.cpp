@@ -118,6 +118,8 @@ namespace gt4stock
         case Page::RaceLab: pageRaceLab(); break;
         case Page::RaceHud: pageRaceHud(); break;
         case Page::Telemetry: pageTelemetry(); break;
+        case Page::Tracks: pageTracks(); break;
+        case Page::RaceCameras: pageRaceCameras(); break;
         }
         drawStatusLine();
         ui_.blockInput(false);
@@ -1364,9 +1366,12 @@ namespace gt4stock
             if (ui_.toggle("keyboard", c.x + c.width - 60, y, st_.pad.keyboard))
                 markDirty();
         }
-        // The DualShock 2 and its mapping
+        // The DualShock 2 and its mapping: as tall as its contents (measured as drawn, used from the next frame), scrolling when
+        // the window is shorter (developer 2026-10-31: at 1280x800 the closing note ran into the card's bottom edge).
+        static float ds2Need = 0.0f;
+        const float ds2Off = ui_.beginScroll("ds2-card", R(rx, y0, rw + 12, ch));
         {
-            const Rectangle c = R(rx, y0, rw, ch);
+            const Rectangle c = R(rx, y0 - ds2Off, rw, std::max(ch, ds2Need));
             ui_.card(c, "DualShock 2 mapping");
             if (ui_.button("preset-ds2", R(c.x + c.width - 392, c.y + 12, 180, 30), "DualShock layout", Style::Secondary, true, 12.5f))
             {
@@ -1489,10 +1494,12 @@ namespace gt4stock
                 y += 54;
             }
 #endif
-            ui_.wrap("Click a cell, then press the button or pull the trigger (Esc cancels); right-click clears. What each button does in a race "
-                     "(accelerate, brake, shift) is chosen in GT4's own controller options.",
-                     c.x + 20, y, c.width - 40, 12, t.faint);
+            const float hintH = ui_.wrap("Click a cell, then press the button or pull the trigger (Esc cancels); right-click clears. What each button does in a race "
+                                         "(accelerate, brake, shift) is chosen in GT4's own controller options.",
+                                         c.x + 20, y, c.width - 40, 12, t.faint);
+            ds2Need = y + hintH + 14 - c.y;
         }
+        ui_.endScroll("ds2-card", std::max(ch, ds2Need));
 
         // Capture (visible sessions)
         if (capture_ >= 0 && !hidden_)
@@ -1537,11 +1544,32 @@ namespace gt4stock
         const DeviceInfo *wd = w.enabled ? wheelDevice() : nullptr;
         const DeviceInfo *pd = w.enabled ? pedalDevice() : nullptr;
         const auto &list = devices_.list();
+        const DeviceInfo *sd = nullptr; // the shifter on its own USB cable (PS2X_WHEEL_SHIFTER)
+        if (w.enabled && lower(w.shifter) != "none")
+            for (const DeviceInfo &d : list)
+                if (iequals(d.idText(), w.shifter))
+                    sd = &d;
 
         // Devices
+#if defined(GT4L_EDITION_FULL)
+        const float c1h = 276; // (with the Shifter row)
+#else
         const float c1h = 232;
+#endif
+        const float c2h = 206; // Steering
+        // The left column (Wheel and pedals, Steering, Buttons) scrolls when the window is too short for it (developer 2026-10-31:
+        // Build 59's Shift up / Shift down rows ran off the bottom of a 1280x800 launcher). Buttons is as tall as its rows,
+        // or fills the column down to the bottom when there is room.
+        const float buttonsNeed = 50 + 44 + 30 +
+#if defined(GT4L_EDITION_FULL)
+                                  2 * 40 +
+#endif
+                                  42 + (w.enabled ? ui_.wrapHeight("Your controller keeps working with the wheel: use it in GT4's menus, the wheel to drive.", lw - 40, 12) : 0.0f) + 16;
+        const float leftNeed = c1h + kGap + c2h + kGap + buttonsNeed;
+        const float leftOff = ui_.beginScroll("wheel-left", R(x0, y0, lw + 12, ch));
+        const float top = y0 - leftOff; // (the left column's y0, scrolled)
         {
-            const Rectangle c = R(x0, y0, lw, c1h);
+            const Rectangle c = R(x0, top, lw, c1h);
             ui_.card(c, "Wheel and pedals");
             float y = c.y + 52;
             // wheel base
@@ -1611,6 +1639,44 @@ namespace gt4stock
                 markDirty();
             }
             y += 44;
+            // A shifter on its own USB cable (the developer's Simagic, 2026-10-31); one plugged into the base needs nothing here.
+#if defined(GT4L_EDITION_FULL)
+            {
+                std::vector<std::string> sopts{"None, or plugged into the wheel base"};
+                std::vector<std::string> sspecs{"none"};
+                for (const DeviceInfo &d : list)
+                    if (d.kind != DeviceKind::Gamepad && (!wd || d.instance != wd->instance) && (!pd || d.instance != pd->instance))
+                    {
+                        sopts.push_back(d.name + "  (" + d.idText() + ")");
+                        sspecs.push_back(d.idText());
+                    }
+                int ssel = 0;
+                if (lower(w.shifter) != "none")
+                {
+                    ssel = -1;
+                    for (size_t i = 1; i < sspecs.size(); ++i)
+                        if (iequals(sspecs[i], w.shifter))
+                            ssel = static_cast<int>(i);
+                    if (ssel < 0)
+                    {
+                        sopts.push_back((w.shifterName.empty() ? w.shifter : w.shifterName) + "  (not connected)");
+                        sspecs.push_back(w.shifter);
+                        ssel = static_cast<int>(sspecs.size()) - 1;
+                    }
+                }
+                ui_.text("Shifter", c.x + 20, y + 8, 14, w.enabled ? t.text : t.faint);
+                if (ui_.dropdown("shifter-dev", R(c.x + 120, y, c.width - 140, 34), sopts, ssel, w.enabled))
+                {
+                    w.shifter = sspecs[static_cast<size_t>(ssel)];
+                    w.shifterName.clear();
+                    for (const DeviceInfo &d : list)
+                        if (iequals(d.idText(), w.shifter))
+                            w.shifterName = d.name;
+                    markDirty();
+                }
+                y += 44;
+            }
+#endif
             ui_.text("GT4 sees", c.x + 20, y + 7, 14, w.enabled ? t.text : t.faint);
             int model = w.model == "df" ? 1 : w.model == "gtforce" ? 2 : 0;
             if (ui_.segmented("model", R(c.x + 120, y, c.width - 140, 32), {"Driving Force Pro", "Driving Force", "GT Force"}, model, w.enabled, 12.5f))
@@ -1636,7 +1702,7 @@ namespace gt4stock
             }
         }
         // Steering
-        const float c2y = y0 + c1h + kGap, c2h = 206;
+        const float c2y = top + c1h + kGap;
         {
             const Rectangle c = R(x0, c2y, lw, c2h);
             ui_.card(c, "Steering");
@@ -1678,7 +1744,7 @@ namespace gt4stock
         // Buttons
         {
             const float cy = c2y + c2h + kGap;
-            const Rectangle c = R(x0, cy, lw, y0 + ch - cy);
+            const Rectangle c = R(x0, cy, lw, std::max(buttonsNeed, top + ch - cy));
             ui_.card(c, "Buttons");
             float y = c.y + 50;
             int mapped = 0;
@@ -1698,6 +1764,83 @@ namespace gt4stock
                         pressed += (pressed.empty() ? "" : ", ") + strf("%d (%s)", b + 1, kWheelButtonLabels[std::clamp(w.buttons[static_cast<size_t>(b)], 0, kWheelButtonNames - 1)]);
             ui_.text(ui_.fit("Pressed now: " + (pressed.empty() ? std::string("-") : pressed), c.width - 40, 13), c.x + 20, y, 13, t.muted);
             y += 30;
+            // Shift up / Shift down (developer 2026-10-31: "paddles on my wheel and a sequential shifter as well"): GT4's Driving
+            // Force Pro shifts with its paddles, R1 the right one (up) and L1 the left one (down) [I: WHEEL-TEST-RUNBOOK];
+            // two wheel buttons each, set by pressing them. A shifter plugged into the wheel base gives the base's buttons.
+            // (Full edition only: the Classic launcher stays as it was.)
+#if defined(GT4L_EDITION_FULL)
+            {
+                const int targets[2] = {wheelButtonIndex("r1"), wheelButtonIndex("l1")};
+                // A target's buttons: the wheel's (device 0), then the shifter's (device 1).
+                auto boundTo = [&](int target) {
+                    std::vector<std::pair<int, int>> out;
+                    for (int b = 0; b < 128; ++b)
+                        if (w.buttons[static_cast<size_t>(b)] == target)
+                            out.emplace_back(0, b);
+                    for (int b = 0; b < 128; ++b)
+                        if (w.shifterButtons[static_cast<size_t>(b)] == target)
+                            out.emplace_back(1, b);
+                    return out;
+                };
+                auto map = [&](const std::pair<int, int> &k) -> int & {
+                    return (k.first == 0 ? w.buttons : w.shifterButtons)[static_cast<size_t>(k.second)];
+                };
+                if (shiftCapture_ >= 0)
+                {
+                    std::pair<int, int> first{-1, -1};
+                    const DeviceInfo *devs[2] = {wd, sd};
+                    for (int dv = 0; dv < 2 && first.first < 0; ++dv)
+                        if (devs[dv])
+                            for (int b = 0; b < 128 && first.first < 0; ++b)
+                                if (devs[dv]->buttons[static_cast<size_t>(b)])
+                                    first = {dv, b};
+                    if (!shiftArmed_)
+                        shiftArmed_ = first.first < 0;
+                    else if (first.first >= 0)
+                    {
+                        const int target = targets[shiftCapture_ / 2], k = shiftCapture_ % 2;
+                        const std::vector<std::pair<int, int>> bound = boundTo(target);
+                        if (k < static_cast<int>(bound.size()) && bound[static_cast<size_t>(k)] != first)
+                            map(bound[static_cast<size_t>(k)]) = 0;
+                        map(first) = target;
+                        shiftCapture_ = -1;
+                        markDirty();
+                    }
+                    if (IsKeyPressed(KEY_ESCAPE) || !wd)
+                        shiftCapture_ = -1;
+                }
+                const float slotW = std::floor((c.width - 120 - 20 - 90 - 20) * 0.5f);
+                for (int s = 0; s < 2; ++s)
+                {
+                    ui_.text(s == 0 ? "Shift up" : "Shift down", c.x + 20, y + 8, 14, w.enabled ? t.text : t.faint);
+                    const std::vector<std::pair<int, int>> bound = boundTo(targets[s]);
+                    for (int k = 0; k < 2; ++k)
+                    {
+                        const int slot = s * 2 + k;
+                        const bool waiting = shiftCapture_ == slot;
+                        std::string label = k == 0 ? "Set..." : "Add a second...";
+                        if (waiting)
+                            label = "Press it now...";
+                        else if (k < static_cast<int>(bound.size()))
+                            label = strf("%s button %d", bound[static_cast<size_t>(k)].first == 0 ? "Wheel" : "Shifter", bound[static_cast<size_t>(k)].second + 1);
+                        if (ui_.button("shift-" + std::to_string(slot), R(c.x + 120 + k * (slotW + 10), y, slotW, 32), label,
+                                       waiting ? Style::Primary : Style::Secondary, w.enabled && wd != nullptr, 12.5f))
+                        {
+                            shiftCapture_ = waiting ? -1 : slot;
+                            shiftArmed_ = false;
+                        }
+                    }
+                    if (ui_.button("shift-clear-" + std::to_string(s), R(c.x + c.width - 20 - 80, y, 80, 32), "Clear", Style::Secondary,
+                                   w.enabled && !bound.empty(), 12.5f))
+                    {
+                        for (const auto &k : bound)
+                            map(k) = 0;
+                        markDirty();
+                    }
+                    y += 40;
+                }
+            }
+#endif
             ui_.text("D-pad", c.x + 20, y + 7, 14, w.enabled ? t.text : t.faint);
             int hat = w.hat + 1;
             if (ui_.dropdown("hat", R(c.x + 120, y, 200, 32), {"None", "POV hat 1", "POV hat 2", "POV hat 3", "POV hat 4"}, hat, w.enabled))
@@ -1705,7 +1848,11 @@ namespace gt4stock
                 w.hat = hat - 1;
                 markDirty();
             }
+            y += 42;
+            if (w.enabled)
+                ui_.wrap("Your controller keeps working with the wheel: use it in GT4's menus, the wheel to drive.", c.x + 20, y, c.width - 40, 12, t.faint);
         }
+        ui_.endScroll("wheel-left", leftNeed);
         // Pedals
         const float p1h = 270;
         {
@@ -2252,25 +2399,37 @@ namespace gt4stock
                 restoreSlot_ = slot;
                 modal_ = Modal::Restore;
             }
-            ui_.text(mine.empty() ? std::string("no backups yet") : ui_.fit("latest " + timeText(mine.front().time), c.width - 380, 12.5f), c.x + 362,
-                     buttonsY + 9, 12.5f, t.faint);
+            // (while GT4 runs both buttons are greyed: say why there, developer 2026-11-01 "neither is save backup")
+            if (busy())
+                ui_.text(ui_.fit("Close GT4 to back up or restore", c.width - 380, 12.5f), c.x + 362, buttonsY + 9, 12.5f, t.warn);
+            else
+                ui_.text(mine.empty() ? std::string("no backups yet") : ui_.fit("latest " + timeText(mine.front().time), c.width - 380, 12.5f), c.x + 362,
+                         buttonsY + 9, 12.5f, t.faint);
         };
+        // The left column: each memory card as tall as what it shows (the path rows, the save box, the line of other saves,
+        // the buttons) or half the room left, and the column scrolls when the window is too short for it (developer 2026-10-31:
+        // at 1280x800 the "Also on this card" line was drawn under Back up now).
         const float usbH = 166;
-        const float slotH = std::floor((bottom - kTop - usbH - 2 * kGap) * 0.5f);
-        cardBox(R(x0, kTop, lw, slotH), 1);
-        cardBox(R(x0, kTop + slotH + kGap, lw, slotH), 2);
+        const float slotNeed = 52 + 26 + 24 + 68 + 22 + 8 + 46;
+        const float slotH = std::max(slotNeed, std::floor((bottom - kTop - usbH - 2 * kGap) * 0.5f));
+        const float leftOff = ui_.beginScroll("saves-left", R(x0, kTop, lw + 12, bottom - kTop));
+        const float top = kTop - leftOff;
+        cardBox(R(x0, top, lw, slotH), 1);
+        cardBox(R(x0, top + slotH + kGap, lw, slotH), 2);
         // USB stick: where GT4's photos go (changeable: GT4_USB_ROOT).
         {
-            const float cy = kTop + 2 * (slotH + kGap);
-            const Rectangle c = R(x0, cy, lw, bottom - cy);
+            const float cy = top + 2 * (slotH + kGap);
+            const Rectangle c = R(x0, cy, lw, std::max(usbH, bottom - leftOff - cy));
             ui_.card(c, "Photos (GT4's USB stick)");
             if (ui_.toggle("usb", c.x + c.width - 60, c.y + 16, st_.usb))
                 markDirty();
             ui_.text("plugged in", c.x + c.width - 70, c.y + 18, 12.5f, st_.usb ? t.muted : t.faint, Weight::Regular, Align::Right);
             float y = c.y + 52;
             ui_.icon(Icon::Folder, R(c.x + 20, y, 20, 20), t.muted);
-            ui_.text(ui_.fit(shortPath(photos_.dir, inst_.root), c.width - 330, 14, Weight::Regular, true), c.x + 48, y + 1, 14, st_.usb ? t.text : t.faint);
             const float bx = c.x + c.width - 20;
+            // (the path stops 12 dp before Change..., the leftmost of the three buttons)
+            ui_.text(ui_.fit(shortPath(photos_.dir, inst_.root), (bx - 302 - 12) - (c.x + 48), 14, Weight::Regular, true), c.x + 48, y + 1, 14,
+                     st_.usb ? t.text : t.faint);
             if (ui_.button("open-photos", R(bx - 100, y - 6, 100, 32), "Open", Style::Secondary, photos_.exists, 12.5f))
                 sys::openInExplorer(photos_.dir);
             if (ui_.button("usb-default", R(bx - 196, y - 6, 88, 32), "Default", Style::Secondary, !st_.usbRoot.empty() && !busy(), 12.5f))
@@ -2301,6 +2460,7 @@ namespace gt4stock
                      "GT4 sees everything in it as its 128 MB stick.",
                      c.x + 20, y, c.width - 40, 12, t.faint);
         }
+        ui_.endScroll("saves-left", 2 * (slotH + kGap) + usbH);
         // Backups
         {
             const Rectangle c = R(rx, kTop, rw, bottom - kTop);

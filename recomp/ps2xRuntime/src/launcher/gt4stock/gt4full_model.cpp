@@ -131,6 +131,7 @@ namespace gt4stock
             // GT4.exe has that too (gt4stock_util.cpp is linked into it), which made the launcher call it "the Classic GT4".
             f.classic = f.classic || inText("GT4_CLASSIC_BUILD=1 (GT4 Recompilation");
             f.soundPacks = f.soundPacks || has("GT4_SOUND_PACK");
+            f.tracks = f.tracks || has("GT4_TRACKS_HIDE");
         }
         if (!any)
         {

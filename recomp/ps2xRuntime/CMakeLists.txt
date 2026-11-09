@@ -90,6 +90,13 @@ else()
         include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/RaylibInitGuard.cmake")
         ps2x_guard_raylib_init()
     endif()
+    # Build 72 (-march=x86-64-v3 builds): raylib's raudio.c (miniaudio, dr_mp3, dr_flac) and rtextures.c (stb_image,
+    # stb_image_resize2) hold the only third-party code with compile-time AVX / AVX2 / F16C paths. They stay at the baseline
+    # ISA (the last -march wins), so a v3 build runs exactly a base build's code there. (No change without a -march flag.)
+    if(TARGET raylib AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        set_source_files_properties("${raylib_SOURCE_DIR}/src/raudio.c" "${raylib_SOURCE_DIR}/src/rtextures.c"
+            TARGET_DIRECTORY raylib PROPERTIES COMPILE_OPTIONS "-march=x86-64")
+    endif()
 
     if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_ANDROID)
         FetchContent_Declare(
@@ -470,6 +477,19 @@ if(PS2X_GAME STREQUAL "GT3")
 else()
     add_library(ps2_runtime STATIC ${PS2X_RUNTIME_CORE_SOURCES})
 endif()
+# Profiling builds only (Build 73, GS GL thread attribution): PS2X_NOINLINE_SOURCES lists runtime sources compiled with
+# -fno-inline, so a sampling profile names the functions their hot loops call. Empty (the default): no change.
+set(PS2X_NOINLINE_SOURCES "" CACHE STRING "runtime sources compiled with -fno-inline (profiling builds)")
+if(PS2X_NOINLINE_SOURCES AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set_source_files_properties(${PS2X_NOINLINE_SOURCES} PROPERTIES COMPILE_OPTIONS "-fno-inline")
+endif()
+# VU1 read / write tracking (analysis tools only: gt3Vu1Deps / gt3Vu1Tracked, analysis/design/triple-60fps): compiles
+# the translated runtime's tracking; pair it with an image generated with GT3_VU1T_TRACK=1 (PS2X_VU_GENERATED_DIR). Off:
+# the checks cost ~9% of the VIF1/VU1 thread even unused.
+option(PS2X_VU1T_TRACK "Compile the translated VU1 runtime's read / write tracking (analysis builds)" OFF)
+if(PS2X_VU1T_TRACK)
+    target_compile_definitions(ps2_runtime PUBLIC PS2X_VU1T_TRACK=1)
+endif()
 if(NOT PS2X_GAME STREQUAL "GT3")
     # GT4: the in-game cheat card (GT4_CHEAT_CARD, gt4_cheat_card.cpp; analysis/cheats).
     target_sources(ps2_runtime PRIVATE src/lib/gt4_cheat_card.cpp)
@@ -503,6 +523,8 @@ target_sources(ps2_runtime PRIVATE src/lib/gt4_ai_drivers.cpp) # (the Race Lab's
     target_sources(ps2_runtime PRIVATE src/lib/gt4_texture_owner.cpp)
     # GT4: texture replacement (GT4_TEXTURE_REPLACE=<folder>, gt4_texture_replace.cpp; empty in the Classic build).
     target_sources(ps2_runtime PRIVATE src/lib/gt4_texture_replace.cpp)
+    # GT4: Arcade's courses (the pack's added course offered, GT4_TRACKS_HIDE: gt4_tracks.cpp; called from Full builds only).
+    target_sources(ps2_runtime PRIVATE src/lib/gt4_tracks.cpp)
     # GT4: the detailed FPS counter's PC numbers (CPU / GPU load, RAM, VRAM: gt4_fps_stats.cpp; Windows PDH and DXGI).
     target_sources(ps2_runtime PRIVATE src/lib/gt4_fps_stats.cpp)
     # GT4: Multi Monitor Mode's shared controller 1 (GT4_MM_PAD, gt4_multimon_pad.cpp; empty in the Classic build).
@@ -628,10 +650,10 @@ target_sources(ps2_runtime PRIVATE
 if(PS2X_GAME STREQUAL "GT3")
     set(PS2X_VU_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu/generated")
 else()
-    # Made from your own disc (tools/vu1_translate.py), never committed: see docs/BUILDING.md.
+    # (a player's build from their own disc: gt4setup build passes the folder it translated into)
     set(PS2X_VU_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu/generated_gt4" CACHE PATH "Translated GT4 VU microprograms")
     if(NOT EXISTS "${PS2X_VU_GENERATED_DIR}/vu1_images.cpp")
-        message(FATAL_ERROR "No translated VU microprograms at ${PS2X_VU_GENERATED_DIR}: make them from your own disc (docs/BUILDING.md) or set -DPS2X_VU_GENERATED_DIR")
+        message(FATAL_ERROR "No translated VU microprograms at ${PS2X_VU_GENERATED_DIR}: set -DPS2X_VU_GENERATED_DIR")
     endif()
 endif()
 file(GLOB VU1_TRANSLATED_SRC_FILES CONFIGURE_DEPENDS
@@ -736,10 +758,10 @@ if(NOT PS2X_GAME STREQUAL "GT3")
     target_include_directories(ps2EntryRunner BEFORE PRIVATE "${PS2X_GENERATED_DIR}")
     # GT4's pointer-only CORE functions that the generated set lacks (analysis/design/multi-monitor,
     # make_late_functions.py): entered in the dispatch table only when GT4_NET is on (Gt4HostGlue.cpp).
-    # Made from your own disc (tools/make_late_functions.py), never committed: see docs/BUILDING.md.
+    # (a player's build from their own disc: gt4setup build passes the file it made)
     set(PS2X_LATE_FUNCTIONS_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/gt4_late/gt4_late_functions.cpp" CACHE FILEPATH "GT4 pointer-only functions")
     if(NOT EXISTS "${PS2X_LATE_FUNCTIONS_CPP}")
-        message(FATAL_ERROR "No ${PS2X_LATE_FUNCTIONS_CPP}: make it from your own disc (docs/BUILDING.md) or set -DPS2X_LATE_FUNCTIONS_CPP")
+        message(FATAL_ERROR "No ${PS2X_LATE_FUNCTIONS_CPP}: set -DPS2X_LATE_FUNCTIONS_CPP")
     endif()
     target_sources(ps2EntryRunner PRIVATE "${PS2X_LATE_FUNCTIONS_CPP}")
     set_source_files_properties("${PS2X_LATE_FUNCTIONS_CPP}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
@@ -1002,6 +1024,7 @@ if(WIN32 AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA AND PS2X_GAME STREQUAL "GT
         ${GT4STOCK_DIR}/gt4full_model.cpp
         ${GT4STOCK_DIR}/gt4full_pages.cpp
         ${GT4STOCK_DIR}/gt4full_racelab.cpp
+        ${GT4STOCK_DIR}/gt4full_tracks.cpp
         ${GT4STOCK_DIR}/gt4full_racehud.cpp
         ${GT4STOCK_DIR}/gt4full_racetiming.cpp
         ${GT4STOCK_DIR}/gt4full_saveedit.cpp
@@ -1142,6 +1165,15 @@ if(PS2X_BUILD_GS_BENCH)
     target_link_libraries(gt3GsReplayBench PRIVATE ps2_runtime)
     add_executable(gt3Vu1ReplayBench "${CMAKE_SOURCE_DIR}/gt3-tools/vu1_replay_bench.cpp")
     target_link_libraries(gt3Vu1ReplayBench PRIVATE ps2_runtime)
+    # VU1 kick independence (analysis/design/triple-60fps): which kicks give the same packets without the ones before.
+    add_executable(gt3Vu1Independence "${CMAKE_SOURCE_DIR}/gt3-tools/vu1_independence.cpp")
+    target_link_libraries(gt3Vu1Independence PRIVATE ps2_runtime)
+    # VU1 kick dependency graph and critical path (the same design note, Phase A).
+    add_executable(gt3Vu1Deps "${CMAKE_SOURCE_DIR}/gt3-tools/vu1_deps.cpp")
+    target_link_libraries(gt3Vu1Deps PRIVATE ps2_runtime)
+    # The optimistic parallel VU1 modelled on a recording with the translated image's tracking (Phase B).
+    add_executable(gt3Vu1Tracked "${CMAKE_SOURCE_DIR}/gt3-tools/vu1_tracked.cpp")
+    target_link_libraries(gt3Vu1Tracked PRIVATE ps2_runtime)
     # GS mipmapping LOD rules (runtime/gs/gs_mip.h, header only): no game, window or GPU.
     add_executable(gt3GsMipSelfTest "${CMAKE_SOURCE_DIR}/gt3-tools/gs_mip_selftest.cpp")
     target_include_directories(gt3GsMipSelfTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")

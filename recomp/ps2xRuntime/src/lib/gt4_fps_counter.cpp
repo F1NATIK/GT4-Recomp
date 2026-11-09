@@ -1,5 +1,6 @@
 #include "gt4_fps_counter.h"
 #include "gt4_fps_stats.h"
+#include "gt4_hud.h"
 #include "present_overlay.h"
 
 #include "raylib.h"
@@ -134,6 +135,75 @@ namespace gt4fps
             int size;
             Color colour;
         };
+
+        // ---- Its place (30 Oct 2026, developer: "make it so the FPS counter can be placed in different places or make it
+        // dragable"). GT4_FPS_POS=<x %>,<y %>: the box's top left in % of the area it is drawn in (absent: 10 px from the top
+        // left, as before), kept inside it. The left mouse button drags it anywhere in GT4 (menus too) unless our race HUD
+        // has the mouse (gt4hud::mouseTaken); the line is written to gt4-start.env when the button is let go
+        // (gt4hud::saveStartLine), and the launcher keeps it when GT4 closes. An outline shows on it for 2 s after the
+        // mouse last moved over it.
+        bool g_posSet = false;
+        float g_posX = 0.0f, g_posY = 0.0f;
+        const bool g_posRead = [] {
+            const char *v = std::getenv("GT4_FPS_POS");
+            float x = 0.0f, y = 0.0f;
+            if (v && *v)
+            {
+                if (std::sscanf(v, "%f,%f", &x, &y) == 2 && x >= 0.0f && x <= 100.0f && y >= 0.0f && y <= 100.0f)
+                    g_posSet = true, g_posX = x / 100.0f, g_posY = y / 100.0f;
+                else
+                    std::fprintf(stderr, "[gt4-fps] GT4_FPS_POS=%s not understood (<x %%>,<y %%>): the top left\n", v);
+            }
+            return true;
+        }();
+        Rectangle g_box{};     // last frame's box
+        bool g_held = false;
+        Vector2 g_grabOff{};
+        double g_mouseAt = -10.0;
+
+        // The box's top left for a w x h box this frame (the mouse moves it first).
+        void place(const Frame &f, int w, int h, int &x, int &y)
+        {
+            const float W = f.screenW, H = f.screenH;
+            const Vector2 mouse = GetMousePosition(), d = GetMouseDelta();
+            const bool over = g_box.width > 0.0f && CheckCollisionPointRec(mouse, g_box);
+            if (over && (d.x != 0.0f || d.y != 0.0f))
+                g_mouseAt = GetTime();
+            if (!g_held && over && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !gt4hud::mouseTaken())
+                g_held = true, g_grabOff = Vector2{mouse.x - g_box.x, mouse.y - g_box.y};
+            if (g_held)
+            {
+                g_mouseAt = GetTime();
+                const float maxX = std::max(0.0f, W - static_cast<float>(w)), maxY = std::max(0.0f, H - static_cast<float>(h));
+                g_posSet = true;
+                g_posX = W > 0.0f ? std::clamp(mouse.x - g_grabOff.x - f.originX, 0.0f, maxX) / W : 0.0f;
+                g_posY = H > 0.0f ? std::clamp(mouse.y - g_grabOff.y - f.originY, 0.0f, maxY) / H : 0.0f;
+                if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+                {
+                    g_held = false;
+                    char line[64];
+                    std::snprintf(line, sizeof(line), "GT4_FPS_POS=%.1f,%.1f", g_posX * 100.0f, g_posY * 100.0f);
+                    gt4hud::saveStartLine(line);
+                }
+            }
+            if (g_posSet)
+            {
+                x = static_cast<int>(f.originX + std::clamp(g_posX * W, 0.0f, std::max(0.0f, W - static_cast<float>(w))));
+                y = static_cast<int>(f.originY + std::clamp(g_posY * H, 0.0f, std::max(0.0f, H - static_cast<float>(h))));
+            }
+            else
+                x = 10 + static_cast<int>(f.originX), y = 10 + static_cast<int>(f.originY);
+            g_box = Rectangle{static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h)};
+        }
+        // After the box: its outline while held, or for 2 s after the mouse moved over it.
+        void outline()
+        {
+            if (!g_held && (GetTime() - g_mouseAt > 2.0 || !CheckCollisionPointRec(GetMousePosition(), g_box)))
+                return;
+            const Rectangle r{g_box.x - 2.0f, g_box.y - 2.0f, g_box.width + 4.0f, g_box.height + 4.0f};
+            DrawRectangleLinesEx(r, 2.0f, g_held ? Color{255, 214, 64, 230} : Color{255, 255, 255, 170});
+            ps2x::overlay::mark(r.x, r.y, r.width, r.height);
+        }
     }
 
     Mode mode() { return g_mode; }
@@ -195,11 +265,14 @@ namespace gt4fps
                 std::snprintf(ms, sizeof(ms), "no new frame");
             }
             const int w1 = MeasureText(b, big), w2 = MeasureText(ms, sub);
-            const int x = 10, y = 10, w = pad + w1 + pad + w2 + pad, h = pad + big + pad;
+            const int w = pad + w1 + pad + w2 + pad, h = pad + big + pad;
+            int x = 0, y = 0;
+            place(f, w, h, x, y);
             ps2x::overlay::mark(static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h));
             DrawRectangle(x, y, w, h, Color{0, 0, 0, 165});
             DrawText(b, x + pad, y + pad, big, fps > 0.0 ? fpsColour(fps) : Color{200, 200, 200, 255});
             DrawText(ms, x + pad + w1 + pad, y + pad + (big - sub), sub, white);
+            outline();
             return;
         }
 
@@ -299,7 +372,9 @@ namespace gt4fps
         if (graph)
             h += pad / 2 + graphH + pad / 2;
         h += pad - (lines.empty() ? 0 : 4);
-        const int x = 10, y = 10, w = contentW + pad * 2;
+        const int w = contentW + pad * 2;
+        int x = 0, y = 0;
+        place(f, w, h, x, y);
         ps2x::overlay::mark(static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h));
         DrawRectangle(x, y, w, h, Color{0, 0, 0, 165});
         int yy = y + pad;
@@ -331,5 +406,6 @@ namespace gt4fps
             DrawText(lines[i].text.c_str(), x + pad, yy, lines[i].size, lines[i].colour);
             yy += lines[i].size + 4;
         }
+        outline();
     }
 }

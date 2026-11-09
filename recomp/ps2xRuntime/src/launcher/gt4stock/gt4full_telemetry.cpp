@@ -240,6 +240,8 @@ namespace gt4stock
             {
                 bool on = monOn;
                 ui_.text("Telemetry window on a monitor", c.x + 20, y + 3, 14, t.text);
+                if (busy()) // (developer 2026-10-31 could not turn it on: GT4 was running, and the switch only greyed out)
+                    ui_.text("Close GT4 to change this", c.x + c.width - 84, y + 4, 13, t.warn, Weight::Regular, Align::Right);
                 if (ui_.toggle("tele-mon-on", c.x + c.width - 64, y, on, !busy()))
                 {
                     if (on)
@@ -314,7 +316,7 @@ namespace gt4stock
                     if (ui_.clicked(r) && !busy())
                     {
                         if (game)
-                            T.note = strf("Monitor %d shows the game: change the game's screens on Multi-screen (and Display > Screen shape).", static_cast<int>(i) + 1);
+                            T.note = strf("Monitor %d shows the game: change the game's screens on the Screens page.", static_cast<int>(i) + 1);
                         else
                         {
                             pickMonitor(static_cast<int>(i));
@@ -775,8 +777,15 @@ namespace gt4stock
         const float m = std::min(r.width, r.height);
         const float cx = r.x + r.width * 0.5f, cy = r.y + r.height * 0.5f;
         auto big = [&](const std::string &s, float frac, Color c) {
-            const float size = std::clamp(std::min(r.height * frac, r.width / std::max(1.0f, static_cast<float>(s.size())) * 1.1f), 8.0f, 90.0f);
-            ui_.text(s, cx, cy - size * 0.62f, size, c, Weight::Bold, Align::Center);
+            // The sample sits below the box's label (the strip drawn top left at the end) and fits the box's width as measured
+            // (developer 2026-10-31: in a short Lap counter box "LAP 2/3" was drawn under its label).
+            const bool labelled = ki >= 0 && r.height > 16 && r.width > 30;
+            const float top = labelled ? r.y + 19 : r.y, h = r.y + r.height - top;
+            float size = std::clamp(std::min(r.height * frac, h * 0.9f), 8.0f, 90.0f);
+            const float wide = ui_.textWidth(s, size, Weight::Bold);
+            if (wide > r.width - 8)
+                size = std::max(8.0f, size * (r.width - 8) / wide);
+            ui_.text(s, cx, top + h * 0.5f - size * 0.62f, size, c, Weight::Bold, Align::Center);
         };
         if (it.k == "tower" || it.k == "laptimes")
         {

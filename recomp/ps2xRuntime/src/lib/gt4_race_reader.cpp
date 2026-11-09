@@ -101,6 +101,23 @@ namespace gt4race
                 std::fflush(g_csv);
         }
 
+        // Car i's race entry. The race (o) holds a list of its entries at o+0x60: { u32 count, u32 count, u32 entries[] pointer }.
+        // Normally they are o+0x990 + i * 0x35e0 (the list points there), but with GT4's LAN service on (GT4_NET) the race is
+        // another copy whose own entries are left empty and the list points to the entries GT4 uses (1 Nov 2026: the developer's timing
+        // tower said CAR; RAM dumps of the same Arcade race with and without GT4_NET=loop, analysis/design/hud-drag/runs).
+        uint32_t entryOf(const Mem &m, uint32_t o, int i)
+        {
+            const uint32_t list = m.u32(o + 0x60u) & 0x1fffffffu;
+            if (m.ok(list, 0xc) && m.u32(list) > static_cast<uint32_t>(i) && m.u32(list) <= static_cast<uint32_t>(kMaxCars))
+            {
+                const uint32_t arr = m.u32(list + 8u) & 0x1fffffffu;
+                if (m.ok(arr, static_cast<uint32_t>(kMaxCars) * 4u))
+                    if (const uint32_t e = m.u32(arr + static_cast<uint32_t>(i) * 4u) & 0x1fffffffu; m.ok(e, 0x35e0))
+                        return e;
+            }
+            return o + 0x990u + static_cast<uint32_t>(i) * 0x35e0u;
+        }
+
         // GT4_RACE_READER_SCAN=1 (tests, HUD hand-off 7 C): GT4's rev limit and driver names looked for, read only. 40 s into
         // the race and at the finish, for every car: its highest rpm so far and every word of its car record and race entry
         // that holds 2,000 to 20,000 (as a float, a u32 or a u16); once, the race entry's text.
@@ -135,7 +152,7 @@ namespace gt4race
             g_scanDone = first ? 1 : 2;
             for (int i = 0; i < s.carCount; ++i)
             {
-                const uint32_t c = d + 0x6698u + static_cast<uint32_t>(i) * 0x10a0u, e = o + 0x990u + static_cast<uint32_t>(i) * 0x35e0u;
+                const uint32_t c = d + 0x6698u + static_cast<uint32_t>(i) * 0x10a0u, e = entryOf(m, o, i);
                 std::string line;
                 char t[64];
                 auto words = [&](const char *tag, uint32_t base, uint32_t size) {
@@ -255,7 +272,7 @@ namespace gt4race
         for (int i = 0; i < s.carCount; ++i)
         {
             const uint32_t c = d + 0x6698u + static_cast<uint32_t>(i) * 0x10a0u;
-            const uint32_t e = o + 0x990u + static_cast<uint32_t>(i) * 0x35e0u;
+            const uint32_t e = entryOf(m, o, i);
             Car &k = s.cars[i];
             k.place = static_cast<int8_t>(m.u8(c + 0x5b3));
             k.lap = m.s16(c + 0x5b0);
@@ -351,6 +368,36 @@ namespace gt4race
             s.sectorCount = secCount;
         }
         scan(m, s, d, o);
+        // (31 Oct 2026, the developer's timing tower said CAR: in some races GT4 leaves entry+0x350c empty and entry+0x20 is no car code
+        // the disc names. Once a race, 2 s into it, every car's code, name and the small numbers (1..1023, car codes are under
+        // 1,000) in its race entry's first 0x400 bytes and car record's first 0x800, to find where that race keeps them.)
+        {
+            static uint32_t loggedCourse = ~0u;
+            static uint64_t loggedAt = 0;
+            if (s.phase == Phase::PreRace)
+                loggedCourse = ~0u;
+            if (s.phase == Phase::Racing && s.course != loggedCourse && s.raceFrames > 120u && s.raceFrames != loggedAt)
+            {
+                loggedCourse = s.course, loggedAt = s.raceFrames;
+                for (int i = 0; i < s.carCount; ++i)
+                {
+                    if (s.cars[i].name[0])
+                        continue; // (since the entry list: only a car still unnamed)
+                    const uint32_t c = d + 0x6698u + static_cast<uint32_t>(i) * 0x10a0u, e = entryOf(m, o, i);
+                    std::string line;
+                    char t[40];
+                    auto small = [&](const char *tag, uint32_t base, uint32_t size) {
+                        for (uint32_t off = 0; off + 4u <= size; off += 4u)
+                            if (const uint32_t v = m.u32(base + off); v >= 1u && v <= 1023u)
+                                std::snprintf(t, sizeof(t), " %s+%x=%u", tag, off, v), line += t;
+                    };
+                    small("e", e, 0x400u);
+                    small("c", c, 0x800u);
+                    std::fprintf(stderr, "[gt4-race] names: course %u mode %d car %d%s code %u name '%s';%s\n", s.course, s.mode, i,
+                                 s.cars[i].player ? " (you)" : "", s.cars[i].carCode, s.cars[i].name, line.c_str());
+                }
+            }
+        }
         writeCsv(s);
         gt4drivelog::onFrame(s); // (GT4_DRIVE_LOG: the Race Lab's lap and race files)
         std::lock_guard<std::mutex> lk(g_lock);

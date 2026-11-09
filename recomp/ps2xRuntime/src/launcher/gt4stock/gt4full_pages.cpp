@@ -1,4 +1,4 @@
-// GT4 Recompilation launcher, Full edition: the Multi-screen, Network, Sound and Saves > Game progress pages
+// GT4 Recompilation launcher, Full edition: the Screens, Network, Sound and Saves > Game progress pages
 // (FULL-LAUNCHER-PLAN.md 2.3, 2.8, 3.2; Sound: analysis/design/engine-bass).
 
 #include "gt4stock_app.h"
@@ -47,161 +47,75 @@ namespace gt4stock
         }
     }
 
-    // ------------------------------------------------------------------ Multi-screen
-    // Built (full-m2, Multi): three screens side by side with one wide picture (GT4_SCREENS=3, with a GT4.exe that has the
-    // marker); GT4's own Multi Monitor Mode (analysis/design/multi-monitor: a GT4 copy per screen, linked, with a GT4.exe that
-    // has its marker). Not built yet (test builds only, greyed): side views in every mode, one GT4 drawing every view,
-    // 6 screens, the HUD on every screen.
+    // ------------------------------------------------------------------ Screens
+    // developer 2026-10-30: "simplify triple monitors, theres to many different screen options in to many different tabs" and
+    // "GT4 own triple monitor wont work, it runs at 30fps, so we can remove that". Every screen choice is here now, with one
+    // choice at the top: one screen (the shape; full screen / borderless window / window, the monitor, a window's size) or
+    // three screens (one GT4 drawing one wide picture across them, GT4_SCREENS=3: the geometry, the middle monitor). Gone:
+    // GT4's own Multi Monitor Mode (a GT4 copy per screen), 48:9 on one window and the window across all monitors.
     void App::pageMultiscreen()
     {
         const ui::Theme &t = ui::theme();
         FullSettings &f = st_.full;
         const bool live = !full_.read || full_.screens;
+        if (f.mmMode != 0 && f.mmMode != kMmThreeWide)
+            f.mmMode = 0;
         const bool three = f.mmMode == kMmThreeWide;
-        const bool ownLive = !full_.read || full_.multiMonitor; // GT4's own Multi Monitor Mode (its marker)
-        const bool own = f.mmMode == kMmGt4Own;
-        drawHeader("Multi-screen", "GT4 across three monitors side by side. The defaults are your rig: three 31.5\" screens, 70 cm away.");
+        drawHeader("Screens", "One monitor, or three side by side. Changes are saved as you make them.");
         const float x0 = kSidebarW + 32, x1 = ui_.width - 32, bottom = ui_.height - 48, cw = x1 - x0;
-        const float lw = std::floor(std::min(520.0f, cw * 0.5f));
-        // Mode
-        float y = kTop;
+        const float lw = std::floor(std::min(560.0f, (cw - kGap) * 0.5f));
+        // Three screens scroll (developer 2026-10-30: the lineup picture across the page, its sliders under it).
+        const float off = three ? ui_.beginScroll("screens", R(x0, kTop, cw + 12, bottom - kTop)) : 0.0f;
+        float y = kTop - off;
+        // How many screens
+        float modeBottom = y;
         {
-            struct Mode
-            {
-                int value;
-                const char *label, *hint;
-                bool built;
-            };
-            static const Mode modes[] = {{0, "One screen", "GT4 on one monitor (Display > Screen shape)", true},
-                                         {kMmThreeWide, "Three screens, one wide picture", "races and replays across the three, in every mode", true},
-                                         {kMmGt4Own, "GT4's own Multi Monitor Mode", "a GT4 window per screen, linked (Arcade > Multi-LAN Race)", ownLive},
-                                         {2, "GT4's side views in every mode", "each side screen its own angled view", false},
-                                         {3, "One GT4 drawing every view", "up to 6 screens and a live view", false}};
-            const int rows = showUnbuilt_ ? 5 : ownLive ? 3 : 2;
-            const float h = 46 + rows * 34 + 12;
+            const float h = 46 + 2 * 36 + 10;
             const Rectangle c = R(x0, y, lw, h);
-            fullui::card(ui_, c, "Mode", {Pill::Full});
+            fullui::card(ui_, c, "Screens", {Pill::Full});
             float yy = c.y + 46;
-            for (int i = 0; i < rows; ++i)
+            if (fullui::radio(ui_, "screens-one", R(c.x + 10, yy, c.width - 20, 34), !three, "One screen", "GT4 on one monitor", true))
             {
-                const Mode &m = modes[i];
-                const bool enabled = m.built && (m.value != kMmThreeWide || live) && (m.value != kMmGt4Own || ownLive); // (chosen while GT4 runs too: read at its next start)
-                if (fullui::radio(ui_, strf("mm-mode-%d", m.value), R(c.x + 10, yy, c.width - 20, 32), f.mmMode == m.value, m.label, m.hint, enabled, !m.built))
-                {
-                    f.mmMode = m.value;
-                    markDirty();
-                }
-                yy += 34;
+                f.mmMode = 0;
+                markDirty();
             }
+            yy += 36;
+            if (fullui::radio(ui_, "screens-three", R(c.x + 10, yy, c.width - 20, 34), three, "Three screens",
+                              live ? "three monitors side by side: angled sides or one picture across" : "this GT4 program does not have them", live))
+            {
+                f.mmMode = kMmThreeWide;
+                markDirty();
+            }
+            modeBottom = c.y + c.height;
             y += h + kGap;
         }
-        // GT4's own Multi Monitor Mode (live): the screens found, the rig, the top screen, how to start a race.
-        if (own)
+        if (!three)
         {
-            const Rectangle c = R(x0, y, lw, bottom - y);
-            fullui::card(ui_, c, "GT4's own Multi Monitor Mode", {Pill::Experimental, Pill::Full});
-            float yy = c.y + 48;
-            const bool on = ownLive; // (set while GT4 runs too: read at its next start)
-            if (!ownLive)
+            // The shape (16:9, or wider for an ultrawide monitor; GT4's menus stay 16:9).
+            const bool exeLacks = full_.read && (!full_.aspect || !full_.wideShapes);
+            const std::string note = "21:9 and 32:9 are for an ultrawide monitor: races and replays fill it (GT4's view widened), GT4's menus stay 16:9.";
+            const float h = 46 + 34 + 10 + ui_.wrapHeight(note, lw - 40, 12.5f) + 14;
+            const Rectangle c = R(x0, y, lw, h);
+            fullui::card(ui_, c, "Shape", {Pill::Full});
+            int shape = f.aspect == FullAspect::Ultra21 ? 1 : f.aspect == FullAspect::Ultra32 ? 2 : 0;
+            if (ui_.segmented("screens-shape", R(c.x + 20, c.y + 46, c.width - 40, 34), {"16:9", "Ultrawide 21:9", "Super ultrawide 32:9"}, shape, !exeLacks, 12.5f))
             {
-                yy += ui_.wrap("This GT4 program does not have GT4's own Multi Monitor Mode yet: use the GT4 program that came with this launcher.",
-                               c.x + 20, yy, c.width - 40, 12.5f, t.warn);
-                yy += 6;
-            }
-            auto row = [&](const char *id, const char *label, double &value, float lo, float hi, float step, const std::string &shown) {
-                ui_.text(label, c.x + 20, yy + 6, 13.5f, t.faint);
-                float v = static_cast<float>(value);
-                if (ui_.slider(id, R(c.x + 190, yy, c.width - 290, 28), v, lo, hi, step, on))
-                {
-                    value = v;
-                    markDirty();
-                }
-                ui_.text(shown, c.x + c.width - 20, yy + 6, 13.5f, t.text, Weight::Semibold, Align::Right);
-                yy += 32;
-            };
-            row("mmo-w", "Screen picture width", f.mmScreenW, 300.0f, 1500.0f, 0.5f, strf("%.1f mm", f.mmScreenW));
-            row("mmo-h", "Screen picture height", f.mmScreenH, 150.0f, 900.0f, 0.5f, strf("%.1f mm", f.mmScreenH));
-            row("mmo-gap", "Gap between pictures", f.mmBezel, 0.0f, 60.0f, 0.5f, f.mmPanorama ? std::string("not used") : strf("%.1f mm", f.mmBezel));
-            double dist = f.mmDistanceCm;
-            row("mmo-d", "Your eyes to the middle", dist, 30.0f, 200.0f, 1.0f, strf("%d cm", f.mmDistanceCm));
-            if (static_cast<int>(std::lround(dist)) != f.mmDistanceCm)
-            {
-                f.mmDistanceCm = static_cast<int>(std::lround(dist));
+                f.aspect = shape == 1 ? FullAspect::Ultra21 : shape == 2 ? FullAspect::Ultra32 : FullAspect::Wide;
                 markDirty();
             }
-            int sides = f.mmPanorama ? 2 : f.mmAngled ? 0 : 1;
-            ui_.text("Side screens", c.x + 20, yy + 7, 13.5f, t.faint);
-            if (ui_.segmented("mmo-sides", R(c.x + 150, yy, c.width - 170, 30),
-                              {strf("Angled (%.0f\xc2\xb0)", fullMmGt4Angle(f)), "Flat", "Panorama"}, sides, on, 12.5f))
-            {
-                f.mmAngled = sides == 0;
-                f.mmAutoAngle = true;
-                f.mmPanorama = sides == 2;
-                markDirty();
-            }
-            yy += 38;
-            int top = std::clamp(f.mmTop, 0, 2);
-            ui_.text("Top screen", c.x + 20, yy + 7, 13.5f, t.faint);
-            if (ui_.segmented("mmo-top", R(c.x + 150, yy, c.width - 170, 30), {"None", "Top centre view", "Live view"}, top, on, 12.5f))
-            {
-                f.mmTop = top;
-                markDirty();
-            }
-            yy += 40;
-            // The screens found (the middle one: Display > Screen shape).
-            std::string found;
-            bool missing = false;
-            for (const FullMmCopy &cp : fullMmCopies(f))
-            {
-                const MonitorInfo *m = mmMonitor(cp.role);
-                missing = missing || !m;
-                found += std::string(found.empty() ? "" : "   ") + (cp.role == "center" ? "Middle" : cp.role == "left" ? "Left" : cp.role == "right" ? "Right" : "Top") +
-                         ": " + (m ? m->name : std::string("none found"));
-            }
-            yy += ui_.wrap(found + ".", c.x + 20, yy, c.width - 40, 12.5f, missing ? t.warn : t.muted) + 6;
-            yy += ui_.wrap("Play starts one GT4 per screen. With your controller on the middle screen go to Arcade Mode > Multi-LAN Race: "
-                           "the other screens follow you there, connect and wait. Pick the course and the car on the middle screen; "
-                           "the others show the race from their side.",
-                           c.x + 20, yy, c.width - 40, 12.5f, t.faint) +
-                  4;
-            if (yy + 40 < c.y + c.height)
-                ui_.wrap("GT4's Multi-LAN races have no AI cars. Only the middle screen has sound and your wheel; each screen's GT4 uses a copy of "
-                         "your memory card, so your save is never shared.",
-                         c.x + 20, yy, c.width - 40, 12.5f, t.faint);
+            ui_.wrap(note, c.x + 20, c.y + 46 + 34 + 10, c.width - 40, 12.5f, t.faint);
+            // Right: full screen / borderless window / window, the monitor, a window's size, On this screen (gt4full_display.cpp).
+            displayShape(x0 + lw + kGap, kTop, x1, bottom);
+            return;
         }
-        // Three screens (live)
-        else
+        // ---- Three screens. Row 1: the choice above and the middle monitor beside it.
+        const float monitorBottom = displayShape(x0 + lw + kGap, kTop - off, x1, bottom);
+        y = std::max(modeBottom, monitorBottom) + kGap;
+        // Row 2: per camera, with the lineup picture across the page (lining up is what this page is mostly for).
+        if (f.screensAngled)
+            y = screensCameras(x0, y, x1) + kGap;
+        // Row 3: the three screens' style and geometry, two columns across the page.
         {
-            const Rectangle c = R(x0, y, lw, bottom - y);
-            fullui::card(ui_, c, "Three screens, one wide picture", {Pill::Experimental, Pill::Full});
-            float yy = c.y + 48;
-            const bool on = live; // (set while GT4 runs too: read at its next start)
-            if (!live)
-            {
-                yy += ui_.wrap("This GT4 program does not have three screens yet: use the GT4 program that came with this launcher.", c.x + 20, yy, c.width - 40, 12.5f,
-                               t.warn);
-                yy += 6;
-            }
-            auto row = [&](const char *id, const char *label, double &value, float lo, float hi, const std::string &shown) {
-                ui_.text(label, c.x + 20, yy + 6, 13.5f, t.faint);
-                float v = static_cast<float>(value);
-                if (ui_.slider(id, R(c.x + 190, yy, c.width - 290, 28), v, lo, hi, 0.5f, on))
-                {
-                    value = v;
-                    markDirty();
-                }
-                ui_.text(shown, c.x + c.width - 20, yy + 6, 13.5f, t.text, Weight::Semibold, Align::Right);
-                yy += 34;
-            };
-            row("mm-w", "Screen picture width", f.mmScreenW, 300.0f, 1500.0f, strf("%.1f mm", f.mmScreenW));
-            row("mm-h", "Screen picture height", f.mmScreenH, 150.0f, 900.0f, strf("%.1f mm", f.mmScreenH));
-            row("mm-gap", "Gap between pictures", f.mmBezel, 0.0f, 60.0f, f.mmPanorama ? std::string("not used") : strf("%.1f mm", f.mmBezel));
-            ui_.text(ui_.fit("Panorama (nothing hidden behind the frames)", c.width - 100, 13.5f), c.x + 20, yy + 2, 13.5f, t.faint);
-            if (ui_.toggle("mm-panorama", c.x + c.width - 60, yy, f.mmPanorama, on))
-                markDirty();
-            yy += 32;
-            // The middle monitor and its neighbours, as GT4.exe picks them (gt4ThreeScreens: right next to it, at least half
-            // its height shared).
             const MonitorInfo *mid = selectedMonitor();
             auto beside = [&](bool left) -> const MonitorInfo * {
                 if (!mid)
@@ -217,76 +131,367 @@ namespace gt4stock
             };
             const MonitorInfo *l = beside(true), *r = beside(false);
             auto nm = [](const MonitorInfo *m) { return m ? m->name : std::string("none found"); };
-            const std::string where = mid ? strf("Middle screen: %s (Display > Screen shape). Left: %s. Right: %s.", mid->name.c_str(), nm(l).c_str(), nm(r).c_str())
-                                          : std::string("Middle screen: the monitor GT4 opens on.");
-            yy += ui_.wrap(where, c.x + 20, yy, c.width - 40, 12.5f, three && mid && (!l || !r) ? t.warn : t.muted) + 4;
-            yy += ui_.wrap("The race HUD and the mirror stay on the middle screen; GT4's menus are 16:9 on the middle screen. The picture is "
-                           "flat: GT4's view simply goes on across the side screens.",
-                           c.x + 20, yy, c.width - 40, 12.5f, t.faint) +
-                  4;
-            if (yy + 30 < c.y + c.height)
-                ui_.wrap("Use 2x or 3x (Display > Resolution) so the side screens stay sharp.", c.x + 20, yy, c.width - 40, 12.5f, t.faint);
-        }
-        // Right: GT4's view across the screens. (The test builds' "More screens and angled sides" card, choices not built yet, is
-        // gone: it left the rig picture no room, developer 2026-10-19 "your rig from above dosen't seem to be showing correctly".)
-        const float rx = x0 + lw + kGap;
-        const float nbH = 0.0f;
-        const float teleH = 0.0f; // (the Telemetry screen card is on its own page now)
-        {
-            const Rectangle c = R(rx, kTop, x1 - rx, bottom - kTop - (nbH > 0 ? nbH + kGap : 0.0f) - (teleH > 0 ? teleH + kGap : 0.0f));
-            ui_.card(c, three ? "GT4's view across your screens" : "Your rig from above");
-            // GT4's own mode: GT4's angled screens face you at its own angle for the distance (the rig view's auto angle).
-            const RigView rv = rigView(f.mmScreenW, f.mmBezel, f.mmDistanceCm * 10.0, own ? f.mmAngled && !f.mmPanorama : f.mmAngled,
-                                       own ? true : f.mmAutoAngle, f.mmAngleDeg);
-            const double pi = 3.14159265358979323846, W = f.mmScreenW, g = three && f.mmPanorama ? 0.0 : f.mmBezel, d = f.mmDistanceCm * 10.0;
-            const double th = three ? 0.0 : rv.sideAngleDeg * pi / 180.0; // the wide picture is one flat plane
-            const float area = std::max(40.0f, std::min(c.width - 60, (c.height - 150) * 1.7f));
-            const float k = area / static_cast<float>(W * 3.2);
-            const float ex = c.x + c.width * 0.5f, ey = c.y + 70 + static_cast<float>(d) * k;
-            auto P = [&](double x, double z) { return Vector2{ex + static_cast<float>(x) * k, ey - static_cast<float>(z) * k}; };
-            const Vector2 eye = P(0, 0);
-            const double fx = W / 2 + g + W * std::cos(th), fz = d - W * std::sin(th);
-            ui_.line(eye.x, eye.y, P(fx, fz).x, P(fx, fz).y, 1.0f, ui::alpha(t.accent, 0.4f));
-            ui_.line(eye.x, eye.y, P(-fx, fz).x, P(-fx, fz).y, 1.0f, ui::alpha(t.accent, 0.4f));
-            auto screen = [&](double x1s, double z1s, double x2s, double z2s, Color col) {
-                const Vector2 a = P(x1s, z1s), b = P(x2s, z2s);
-                ui_.line(a.x, a.y, b.x, b.y, 5.0f, col);
+            const std::string where = mid ? strf("Left: %s. Middle: %s. Right: %s.", nm(l).c_str(), mid->name.c_str(), nm(r).c_str())
+                                          : std::string("Middle: the monitor GT4 opens on.");
+            const bool missing = mid && (!l || !r);
+            const std::string about =
+                f.screensAngled ? strf("Each side screen shows its own view, turned %d\xc2\xb0 in: set the angle your side screens really stand at, and the "
+                                       "road runs on straight across the frames. The middle screen keeps GT4's own view at full sharpness, with the HUD and "
+                                       "the mirror; GT4's menus are 16:9 on it.",
+                                       f.screensAngle)
+                                : std::string("One flat picture across the three: what lies behind the frames is left out, so lines run straight across them. "
+                                              "The HUD and the mirror stay on the middle screen; GT4's menus are 16:9 on it.");
+            const float colW = std::floor((cw - 40 - 32) * 0.5f);
+            const std::string specNote = "Reads each monitor's own description (its EDID) on this PC: nothing is looked up online.";
+            const float specH = 32 + 8 + ui_.wrapHeight(screensSpec_.empty() ? specNote : screensSpec_, cw - 40, 12.5f) + 12;
+            const float h = 48 + 42 + 3 * 34 + 10 + specH + ui_.wrapHeight(where, cw - 40, 13.5f) + 6 + (missing ? 22 : 0) + ui_.wrapHeight(about, cw - 40, 12.5f) + 16;
+            const Rectangle c = R(x0, y, cw, h);
+            fullui::card(ui_, c, "Your three screens", {Pill::Experimental, Pill::Full});
+            const bool on = live; // (set while GT4 runs too: read at its next start)
+            float yy = c.y + 48;
+            {
+                int style = f.screensAngled ? 0 : 1;
+                ui_.text("Style", c.x + 20, yy + 8, 13.5f, t.faint);
+                if (ui_.segmented("screens-style", R(c.x + 170, yy, std::min(520.0f, c.width - 190), 32), {"Angled sides", "One picture across"}, style, on, 12.5f))
+                {
+                    f.screensAngled = style == 0;
+                    markDirty();
+                }
+                yy += 42;
+            }
+            // Two columns of sliders: the left one's rows, then the right one's, from the same top.
+            const float rowsTop = yy;
+            auto row = [&](float cx, float &ry, const char *id, const char *label, double &value, float lo, float hi, float step, const std::string &shown) {
+                ui_.text(label, cx, ry + 6, 13.5f, t.faint);
+                float v = static_cast<float>(value);
+                if (ui_.slider(id, R(cx + 170, ry, colW - 280, 28), v, lo, hi, step, on))
+                {
+                    value = v;
+                    markDirty();
+                }
+                ui_.text(shown, cx + colW, ry + 6, 13.5f, t.text, Weight::Semibold, Align::Right);
+                ry += 34;
             };
-            screen(-W / 2, d, W / 2, d, t.accent);
-            screen(W / 2 + g, d, fx, fz, ui::mixColor(t.accent, t.muted, 0.3f));
-            screen(-W / 2 - g, d, -fx, fz, ui::mixColor(t.accent, t.muted, 0.3f));
-            ui_.circle(eye.x, eye.y, 6, t.text);
-            ui_.text("you", eye.x, eye.y + 10, 12, t.muted, Weight::Regular, Align::Center);
-            float yy = ey + 40;
-            if (three)
+            float ly = rowsTop, ry = rowsTop;
+            const float lx = c.x + 20, rx = c.x + 20 + colW + 32;
+            if (f.screensAngled)
             {
-                // GT4's own 16:9 view on the middle screen (425 mm wide at 276 mm, GT4's preset), widened across the three
-                // screens and the gaps: the same height of view, so the cars are the size they are on one screen.
-                const double a = W / std::max(1.0, f.mmScreenH), units = 3.0 + 2.0 * g / W;
-                const double middle = 2.0 * std::atan(425.0 * a * 9.0 / 16.0 / 2.0 / 276.0) * 180.0 / pi;
-                const double across = 2.0 * std::atan(425.0 * a * units * 9.0 / 16.0 / 2.0 / 276.0) * 180.0 / pi;
-                ui_.text(strf("%.0f\xc2\xb0 of the track across the three screens", across), c.x + 20, yy, 18, t.text, Weight::Bold);
-                yy += 30;
-                ui_.text(ui_.fit(strf("The middle screen shows GT4's own %.0f\xc2\xb0 view; the cars are the size they are on one screen", middle), c.width - 40, 13.5f),
-                         c.x + 20, yy, 13.5f, t.muted);
-                yy += 24;
-                ui_.wrap(g > 0 ? "What lies behind the frames is left out, so lines run straight across them, as through a car's pillars."
-                               : "Panorama: one continuous picture; lines step a little at the frames.",
-                         c.x + 20, yy, c.width - 40, 12.5f, t.faint);
+                double angle = f.screensAngle;
+                row(lx, ly, "mm-angle", "Side screens' angle", angle, 0.0f, 70.0f, 1.0f, strf("%d\xc2\xb0 in from flat", f.screensAngle));
+                if (static_cast<int>(std::lround(angle)) != f.screensAngle)
+                {
+                    f.screensAngle = static_cast<int>(std::lround(angle));
+                    markDirty();
+                }
             }
-            else
+            row(lx, ly, "mm-gap", "Gap between pictures", f.mmBezel, 0.0f, 60.0f, 0.5f, f.mmPanorama ? std::string("not used") : strf("%.1f mm", f.mmBezel));
+            ui_.text(ui_.fit("Panorama (nothing hidden behind the frames)", colW - 70, 13.5f), lx, ly + 2, 13.5f, t.faint);
+            if (ui_.toggle("mm-panorama", lx + colW - 40, ly, f.mmPanorama, on))
+                markDirty();
+            ly += 34;
+            row(rx, ry, "mm-w", "Screen picture width", f.mmScreenW, 300.0f, 1500.0f, 0.5f, strf("%.1f mm", f.mmScreenW));
+            row(rx, ry, "mm-h", "Screen picture height", f.mmScreenH, 150.0f, 900.0f, 0.5f, strf("%.1f mm", f.mmScreenH));
+            // ("Your eye to the middle screen" (Build 57) is gone since Build 68: only the side views took its zoom, so with
+            // the eye anywhere but GT4's own they no longer joined the middle one (the developer's 685 mm: sides ~1.8x the middle).
+            // GT4_SCREENS_EYE is still kept in the settings file and ignored.)
+            yy = std::max(ly, ry) + 10;
+            // Get screen specs (developer 2026-10-30): the picture's size from the three monitors' EDIDs, shown first; Apply sets it
+            // (the gap too for a monitor in the table below; otherwise the gap is left as it is). Nothing changes until Apply.
+            if (ui_.button("screens-specs", R(c.x + 20, yy, 170, 32), "Get screen specs", Style::Secondary, mid != nullptr, 13))
             {
-                ui_.text(strf("%.0f\xc2\xb0 seen across the three screens", rv.totalFovDeg), c.x + 20, yy, 18, t.text, Weight::Bold);
-                yy += 30;
-                ui_.text(strf("Middle screen %.1f\xc2\xb0 \xc2\xb7 side screens at %.1f\xc2\xb0", rv.centreFovDeg, rv.sideAngleDeg), c.x + 20, yy, 13.5f, t.muted);
-                yy += 24;
-                ui_.wrap(own ? "Each screen's GT4 draws its own view: the side ones turned to face you (Angled), or the picture going on flat "
-                               "across them (Flat, Panorama). Measure your side screens' real angle and your eyes' distance to set this."
-                             : "Pick \"Three screens, one wide picture\" to play GT4 across them.",
-                         c.x + 20, yy, c.width - 40, 12.5f, t.faint);
+                // Known bezels: picture width and height and the gap between two pictures side by side, in mm.
+                struct Known
+                {
+                    const char *model;
+                    double w, h, gap;
+                };
+                static const Known kKnown[] = {{"G321Q", 698.1, 392.7, 18.1}}; // MSI G321Q (the developer's)
+                std::string said;
+                double w = 0, hh = 0, gap = -1;
+                bool same = true;
+                std::string first;
+                const MonitorInfo *three[3] = {l, mid, r};
+                const char *names[3] = {"Left", "Middle", "Right"};
+                for (int i = 0; i < 3; ++i)
+                {
+                    if (!three[i])
+                    {
+                        said += strf("%s: no monitor. ", names[i]);
+                        same = false;
+                        continue;
+                    }
+                    const sys::MonitorSpec s = sys::monitorSpec(three[i]->x + three[i]->w / 2, three[i]->y + three[i]->h / 2);
+                    if (!s.ok)
+                    {
+                        said += strf("%s: %s. ", names[i], s.why.c_str());
+                        same = false;
+                        continue;
+                    }
+                    const std::string who = s.maker + (s.model.empty() ? std::string() : " " + s.model);
+                    said += strf("%s: %s, %d x %d mm from the monitor. ", names[i], who.c_str(), s.widthMm, s.heightMm);
+                    if (first.empty())
+                        first = who + strf("|%d|%d", s.widthMm, s.heightMm);
+                    else if (first != who + strf("|%d|%d", s.widthMm, s.heightMm))
+                        same = false;
+                    if (i == 1)
+                    {
+                        w = s.widthMm, hh = s.heightMm;
+                        for (const Known &k : kKnown)
+                            if (s.model.find(k.model) != std::string::npos)
+                                w = k.w, hh = k.h, gap = k.gap;
+                    }
+                }
+                if (w > 0 && hh > 0)
+                {
+                    said += strf("Apply sets the picture to %.1f x %.1f mm", w, hh);
+                    said += gap >= 0 ? strf(" and the gap to %.1f mm (this model's bezels).", gap)
+                                     : std::string(". The gap is not known for this model: measure from one picture's edge to the next one's and enter it.");
+                    if (!same)
+                        said += " The three monitors are not all the same: the middle one's size is used.";
+                }
+                else
+                    said += "Nothing to apply: enter the sizes by hand.";
+                screensSpec_ = said;
+                screensSpecReady_ = w > 0 && hh > 0;
+                screensSpecW_ = w, screensSpecH_ = hh, screensSpecGap_ = gap;
+            }
+            if (screensSpecReady_ && ui_.button("screens-specs-apply", R(c.x + 20 + 180, yy, 110, 32), "Apply", Style::Primary, true, 13))
+            {
+                f.mmScreenW = screensSpecW_;
+                f.mmScreenH = screensSpecH_;
+                if (screensSpecGap_ >= 0)
+                {
+                    f.mmBezel = screensSpecGap_;
+                    f.mmPanorama = false;
+                }
+                screensSpecReady_ = false;
+                screensSpec_ += " Applied.";
+                markDirty();
+            }
+            yy += 40;
+            yy += ui_.wrap(screensSpec_.empty() ? specNote : screensSpec_, c.x + 20, yy, c.width - 40, 12.5f, screensSpec_.empty() ? t.faint : t.text) + 12;
+            yy += ui_.wrap(where, c.x + 20, yy, c.width - 40, 13.5f, missing ? t.warn : t.text, Weight::Semibold) + 6;
+            if (missing)
+            {
+                ui_.text(ui_.fit("Plug in the side monitors and place them right next to the middle one in Windows' display settings.", c.width - 40, 12.5f),
+                         c.x + 20, yy, 12.5f, t.warn);
+                yy += 22;
+            }
+            ui_.wrap(about, c.x + 20, yy, c.width - 40, 12.5f, t.faint);
+            y = c.y + c.height + kGap;
+        }
+        ui_.endScroll("screens", y + off - kTop);
+        // The lineup picture enlarged (a click on it): the whole picture, and both bezel seams magnified under it. A click or Esc
+        // closes it.
+        if (lineupZoom_ && lineupTex_.id)
+        {
+            const Rectangle all = ui_.px(R(0, 0, ui_.width, ui_.height));
+            DrawRectangleRec(all, Color{0, 0, 0, 225});
+            const float tw = static_cast<float>(lineupTex_.width), th = static_cast<float>(lineupTex_.height);
+            const float pw = ui_.width - 64, ph = pw * th / tw;
+            const Rectangle pic = R(32, 40, pw, ph);
+            DrawTexturePro(lineupTex_, Rectangle{0, 0, tw, th}, ui_.px(pic), Vector2{0, 0}, 0, WHITE);
+            // The seams: a strip 6% of the picture wide around each third's edge, three times bigger.
+            const float sw = tw * 0.06f, sh = th * 0.7f, sy = th * 0.15f;
+            const float iw = (ui_.width - 64 - kGap) * 0.5f, ih = iw * sh / sw > (ui_.height - ph - 140) ? (ui_.height - ph - 140) : iw * sh / sw;
+            const float iwFit = ih * sw / sh;
+            for (int s = 0; s < 2; ++s)
+            {
+                const float cx = tw * (s == 0 ? 1.0f / 3.0f : 2.0f / 3.0f);
+                const float bx = 32 + s * (iw + kGap) + (iw - iwFit) * 0.5f, by = 40 + ph + 46;
+                DrawTexturePro(lineupTex_, Rectangle{cx - sw * 0.5f, sy, sw, sh}, ui_.px(R(bx, by, iwFit, ih)), Vector2{0, 0}, 0, WHITE);
+                ui_.text(s == 0 ? "Left seam" : "Right seam", bx, by - 24, 14, t.text, Weight::Semibold);
+            }
+            ui_.text("Click anywhere or press Esc to close", 32, 12, 13.5f, t.faint);
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsKeyPressed(KEY_ESCAPE))
+                lineupZoom_ = false;
+        }
+    }
+
+    // Angled triple screens per race camera (developer 2026-10-30): each camera's field of view, side angle trim, bezels and the side
+    // screens' up/down offsets (GT4_SCREENS_CAMERAS), with the lineup picture GT4.exe saved for it (F12 in a race, or taken
+    // again by GT4 as these sliders move through the live link: screens-lineup\<camera>.png) across the page, the sliders
+    // under it. Keyed by GT4's camera (gt4cam's views), whatever moves the cameras themselves (Driving). Returns its bottom.
+    float App::screensCameras(float x0, float y0, float x1)
+    {
+        const ui::Theme &t = ui::theme();
+        FullSettings &f = st_.full;
+        const fs::path gt4Dir = inst_.exeFound ? inst_.exe.parent_path() : inst_.root;
+        // The camera GT4 is in now (screens-lineup\current.txt, written by GT4.exe as it changes): this tab follows it.
+        if (liveFrames_++ % 20u == 0u)
+        {
+            std::string now;
+            if (FILE *cf = std::fopen((gt4Dir / "screens-lineup" / "current.txt").string().c_str(), "r"))
+            {
+                char buf[64] = {};
+                if (std::fgets(buf, sizeof(buf), cf))
+                    now = trim(buf);
+                std::fclose(cf);
+            }
+            if (!now.empty() && now != gt4CameraNow_)
+            {
+                gt4CameraNow_ = now;
+                for (int i = 0; i < kFullScreenCameras; ++i)
+                    if (now == kFullScreenCameraKeys[i] && f.screensCamTab != i)
+                    {
+                        f.screensCamTab = i;
+                        markDirty();
+                    }
             }
         }
-        // (The Telemetry screen card moved to its own page, Driving > Telemetry screen: gt4full_telemetry.cpp, HUD hand-off 8.)
+        const int tab = std::clamp(f.screensCamTab, 0, kFullScreenCameras - 1);
+        // The live link: these settings for the running GT4 (screens-live.txt beside GT4.exe), written as they change; GT4 takes
+        // them in at once and takes the camera's lineup picture again, so the picture follows the sliders.
+        {
+            std::string cams;
+            for (int i = 0; i < kFullScreenCameras; ++i)
+            {
+                const FullSettings::ScreensCamera &k = f.screensCams[i];
+                cams += strf("%s%s:%d,%d,%d,%d,%d,%d,%d", i ? ";" : "", kFullScreenCameraKeys[i], k.fov, k.trim, k.bezels ? 1 : 0, k.upLeft, k.upRight,
+                             k.zoomLeft, k.zoomRight);
+                if (k.tiltLeft != 0 || k.tiltRight != 0)
+                    cams += strf(",%d,%d", k.tiltLeft, k.tiltRight);
+            }
+            const std::string live = strf("GT4_SCREENS_ANGLE=%d\nGT4_SCREENS_EYE=%d\nGT4_SCREENS_CAMERAS=%s\n", f.screensAngle, f.screensEye, cams.c_str());
+            // (not in the hidden test mode: its scenes' values must never reach a GT4 folder, or a GT4 running there)
+            if (live != liveWritten_ && !hidden_)
+            {
+                liveWritten_ = live;
+                if (FILE *lf = std::fopen((gt4Dir / "screens-live.txt").string().c_str(), "w"))
+                {
+                    std::fputs(live.c_str(), lf);
+                    std::fclose(lf);
+                }
+            }
+        }
+        // The lineup picture, loaded again when the file changes.
+        const fs::path file = gt4Dir / "screens-lineup" / (std::string(kFullScreenCameraKeys[tab]) + ".png");
+        std::error_code ec;
+        const auto when = fs::last_write_time(file, ec);
+        const std::string key = ec ? std::string() : file.string() + "|" + std::to_string(static_cast<long long>(when.time_since_epoch().count()));
+        if (key != lineupKey_)
+        {
+            if (lineupTex_.id)
+                UnloadTexture(lineupTex_);
+            lineupTex_ = Texture2D{};
+            lineupKey_ = key;
+            if (!key.empty())
+            {
+                Image img = LoadImage(file.string().c_str());
+                if (img.data)
+                {
+                    lineupTex_ = LoadTextureFromImage(img);
+                    SetTextureFilter(lineupTex_, TEXTURE_FILTER_BILINEAR);
+                }
+                UnloadImage(img);
+            }
+        }
+        // The card: tabs, the picture across it, then two columns of sliders.
+        const float cw = x1 - x0, pw = cw - 40;
+        const float ph = lineupTex_.id ? pw * static_cast<float>(lineupTex_.height) / std::max(1, lineupTex_.width) : 96.0f;
+        const float colW = std::floor((cw - 40 - 32) * 0.5f);
+        // (rows: the taller of the two columns; the left has 4 (field of view, side angle, bezels, the reset buttons), the right
+        // 6 (up/down, zoom and tilt for each side screen: Build 69's tilt rows fell below the card before this counted them)
+        constexpr int kLeftRows = 4, kRightRows = 6;
+        const float h = 48 + 42 + (gt4CameraNow_.empty() ? 0 : 24) + ph + 30 + std::max(kLeftRows, kRightRows) * 34 + 14;
+        const Rectangle c = R(x0, y0, cw, h);
+        fullui::card(ui_, c, "Per camera", {Pill::Experimental, Pill::Full});
+        float yy = c.y + 48;
+        int tabSel = tab;
+        if (ui_.segmented("screens-cam", R(c.x + 20, yy, std::min(720.0f, c.width - 40), 32), {"Bumper", "Bonnet", "Roof", "Close", "Chase", "Far"}, tabSel, true,
+                          12.0f))
+        {
+            f.screensCamTab = tabSel;
+            markDirty();
+        }
+        yy += 42;
+        if (!gt4CameraNow_.empty())
+        {
+            const char *label = gt4CameraNow_.c_str();
+            for (int i = 0; i < kFullScreenCameras; ++i)
+                if (gt4CameraNow_ == kFullScreenCameraKeys[i])
+                    label = kFullScreenCameraLabels[i];
+            ui_.text(ui_.fit(strf("GT4 is in the %s camera: your screens and this picture follow the sliders.", label), c.width - 40, 12.5f), c.x + 20, yy, 12.5f,
+                     t.ok);
+            yy += 24;
+        }
+        const Rectangle picR = R(c.x + 20, yy, pw, ph);
+        if (lineupTex_.id)
+        {
+            DrawTexturePro(lineupTex_, Rectangle{0, 0, static_cast<float>(lineupTex_.width), static_cast<float>(lineupTex_.height)}, ui_.px(picR), Vector2{0, 0}, 0,
+                           WHITE);
+            if (!lineupZoom_ && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), ui_.px(picR)))
+                lineupZoom_ = true;
+            yy += ph + 6;
+            ui_.text(ui_.fit(strf("The %s camera's lineup picture: click it for the bezel seams up close. F12 in a race takes one any time.",
+                                  kFullScreenCameraLabels[tab]),
+                             c.width - 40, 12.5f),
+                     c.x + 20, yy, 12.5f, t.faint);
+        }
+        else
+        {
+            ui_.fill(picR, ui::alpha(t.border, 0.5f));
+            ui_.wrap(strf("No lineup picture for the %s camera yet: in a race in that view, press F12. It saves the three screens as shown, and it "
+                          "appears here; then GT4 takes it again by itself as you move these sliders.",
+                          kFullScreenCameraLabels[tab]),
+                     c.x + 40, yy + 30, pw - 40, 13.0f, t.muted);
+            yy += ph + 6;
+        }
+        yy += 24;
+        FullSettings::ScreensCamera &cam = f.screensCams[tab];
+        auto row = [&](float cx, float &ry, const char *id, const char *label, int &value, int lo, int hi, const std::string &shown) {
+            ui_.text(label, cx, ry + 6, 13.5f, t.faint);
+            float v = static_cast<float>(value);
+            if (ui_.slider(id, R(cx + 170, ry, colW - 280, 28), v, static_cast<float>(lo), static_cast<float>(hi), 1.0f, true))
+            {
+                value = static_cast<int>(std::lround(v));
+                markDirty();
+            }
+            ui_.text(shown, cx + colW, ry + 6, 13.5f, t.text, Weight::Semibold, Align::Right);
+            ry += 34;
+        };
+        float ly = yy, ry = yy;
+        const float lx = c.x + 20, rx = c.x + 20 + colW + 32;
+        row(lx, ly, "cam-fov", "Field of view", cam.fov, 40, 160, cam.fov == 100 ? std::string("GT4's own") : strf("%d%% of GT4's", cam.fov));
+        row(lx, ly, "cam-trim", "Side angle", cam.trim, -15, 15, strf("%d\xc2\xb0 (%+d)", f.screensAngle + cam.trim, cam.trim));
+        ui_.text("Leave out what is behind the bezels", lx, ly + 2, 13.5f, t.faint);
+        if (ui_.toggle("cam-bezels", lx + colW - 40, ly, cam.bezels, true))
+            markDirty();
+        ly += 34;
+        // Back to the settings that match the screens (developer 2026-10-31, after the side views' fixes: sliders set to make up for
+        // the old errors now push the pictures apart). Field of view 100, angle as the screens, bezels left out, level, 100%.
+        {
+            const FullSettings::ScreensCamera standard;
+            auto same = [&](const FullSettings::ScreensCamera &k) {
+                return k.fov == standard.fov && k.trim == standard.trim && k.bezels == standard.bezels && k.upLeft == standard.upLeft &&
+                       k.upRight == standard.upRight && k.zoomLeft == standard.zoomLeft && k.zoomRight == standard.zoomRight &&
+                       k.tiltLeft == standard.tiltLeft && k.tiltRight == standard.tiltRight;
+            };
+            bool allSame = true;
+            for (int i = 0; i < kFullScreenCameras; ++i)
+                allSame = allSame && same(f.screensCams[i]);
+            const float bw = std::floor((colW - 10) * 0.5f);
+            if (ui_.button("cam-reset", R(lx, ly - 2, bw, 30), "Reset this camera", Style::Secondary, !same(cam), 12.5f))
+            {
+                cam = standard;
+                markDirty();
+            }
+            if (ui_.button("cam-reset-all", R(lx + bw + 10, ly - 2, bw, 30), "Reset all cameras", Style::Secondary, !allSame, 12.5f))
+            {
+                for (int i = 0; i < kFullScreenCameras; ++i)
+                    f.screensCams[i] = standard;
+                markDirty();
+            }
+            ly += 34;
+        }
+        row(rx, ry, "cam-up-left", "Left screen up/down", cam.upLeft, -20, 20, cam.upLeft == 0 ? std::string("level") : strf("%+d%%", cam.upLeft));
+        row(rx, ry, "cam-up-right", "Right screen up/down", cam.upRight, -20, 20, cam.upRight == 0 ? std::string("level") : strf("%+d%%", cam.upRight));
+        row(rx, ry, "cam-zoom-left", "Left screen zoom", cam.zoomLeft, 50, 200, cam.zoomLeft == 100 ? std::string("as it is") : strf("%d%%", cam.zoomLeft));
+        row(rx, ry, "cam-zoom-right", "Right screen zoom", cam.zoomRight, 50, 200, cam.zoomRight == 100 ? std::string("as it is") : strf("%d%%", cam.zoomRight));
+        // (Build 69, developer 2026-10-31: Builds 54-55's up/down look back as its own slider; any tilt breaks the straight joins)
+        row(rx, ry, "cam-tilt-left", "Left screen tilt", cam.tiltLeft, -20, 20, cam.tiltLeft == 0 ? std::string("none") : strf("%+d%%", cam.tiltLeft));
+        row(rx, ry, "cam-tilt-right", "Right screen tilt", cam.tiltRight, -20, 20, cam.tiltRight == 0 ? std::string("none") : strf("%+d%%", cam.tiltRight));
+        return c.y + c.height;
     }
 
     // (Race Lab: its own tab, gt4full_racelab.cpp.)

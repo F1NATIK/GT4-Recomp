@@ -547,18 +547,18 @@ namespace ps2_syscalls
             if (stackSizeSigned > 0)
             {
                 const uint32_t requestedSize = static_cast<uint32_t>(stackSizeSigned);
-                if (requestedSize < PS2_RAM_SIZE)
+                if (requestedSize < PS2_GUEST_RAM_SIZE)
                 {
-                    sp = PS2_RAM_SIZE - requestedSize;
+                    sp = PS2_GUEST_RAM_SIZE - requestedSize;
                 }
                 else
                 {
-                    sp = PS2_RAM_SIZE;
+                    sp = PS2_GUEST_RAM_SIZE;
                 }
             }
             else
             {
-                sp = PS2_RAM_SIZE;
+                sp = PS2_GUEST_RAM_SIZE;
             }
         }
         else if (stack != 0u)
@@ -649,7 +649,7 @@ namespace ps2_syscalls
     {
         (void)rdram;
         (void)runtime;
-        setReturnU32(ctx, PS2_RAM_SIZE);
+        setReturnU32(ctx, PS2_GUEST_RAM_SIZE);
     }
 
     void InitTLB(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

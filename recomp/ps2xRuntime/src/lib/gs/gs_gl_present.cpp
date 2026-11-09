@@ -78,6 +78,7 @@ namespace
     std::atomic<int> g_deinterlace{initialDeinterlace()};
     std::atomic<int> g_presentScale{0};
     std::atomic<int> g_presentScaleY{0};
+    std::atomic<int> g_presentWide{1};
 }
 
 int gsgl::renderScale() { return g_scale.load(std::memory_order_relaxed); }
@@ -136,6 +137,10 @@ int gsgl::presentScaleY()
     wideScaleSplit(renderScale(), sx, sy);
     return sy;
 }
+
+void gsgl::setPresentWide(int pictures) { g_presentWide.store(std::clamp(pictures, 1, 3), std::memory_order_relaxed); }
+
+int gsgl::presentWide() { return g_presentWide.load(std::memory_order_relaxed); }
 
 void gsgl::setPresentScale(int scaleX, int scaleY)
 {

@@ -485,7 +485,7 @@ namespace gt4hudmove
 
     void gsMarker(uint32_t code)
     {
-        if (!settings().any)
+        if (!settings().any || (code >> 24) == 0x7au) // (0x7a: gt4triple's side-screen markers)
             return;
         const uint32_t c = code & 0xffu;
         if (c == 0xfeu)

@@ -340,14 +340,28 @@ namespace ps2x::iop::gt4
             return false;
         };
         auto need = [&](size_t n) { return t.size() >= n; };
-        if (key == "wheel" || key == "pedals")
+        if (key == "wheel" || key == "pedals" || key == "shifter")
         {
             if (!need(2))
                 return fail("needs a device");
             // The rest of the line: a device name may contain spaces.
             const std::string value = trim(line.substr(t[0].size()));
-            (key == "wheel" ? config.wheel : config.pedals) = value;
+            (key == "wheel" ? config.wheel : key == "pedals" ? config.pedals : config.shifter) = value;
             return true;
+        }
+        if (key == "shifter-button")
+        {
+            long long index = 0;
+            if (!need(3) || !parseInt(t[1], index) || index < 0 || index > 127)
+                return fail("shifter-button <host index 0..127> <name>");
+            const std::string name = lower(t[2]);
+            for (const auto &b : ButtonNames)
+                if (name == b.name)
+                {
+                    config.shifterButtons[static_cast<size_t>(index)] = b.bit;
+                    return true;
+                }
+            return fail("unknown button " + t[2]);
         }
         if (key == "steer")
         {
@@ -567,7 +581,8 @@ namespace ps2x::iop::gt4
             const char *env;
             const char *key;
         } single[] = {
-            {"PS2X_WHEEL_DEVICE", "wheel"},   {"PS2X_WHEEL_PEDALS", "pedals"}, {"PS2X_WHEEL_ROTATION", "rotation"},
+            {"PS2X_WHEEL_DEVICE", "wheel"},   {"PS2X_WHEEL_PEDALS", "pedals"}, {"PS2X_WHEEL_SHIFTER", "shifter"},
+            {"PS2X_WHEEL_ROTATION", "rotation"},
             {"PS2X_WHEEL_LOCK", "lock"},      {"PS2X_WHEEL_MODEL", "model"},   {"PS2X_WHEEL_FFB", "ffb"},
             {"PS2X_WHEEL_FFB_GAIN", "ffb-gain"}, {"PS2X_WHEEL_FFB_INVERT", "ffb-invert"}, {"PS2X_WHEEL_LOG", "log"},
         };
@@ -928,7 +943,8 @@ namespace ps2x::iop::gt4
     void DirectInputWheel::ensureDevices(double now)
     {
         const bool separatePedals = lower(config_.pedals) != "wheel";
-        if (wheel_ && (!separatePedals || pedals_))
+        const bool wantShifter = !config_.shifter.empty() && lower(config_.shifter) != "none";
+        if (wheel_ && (!separatePedals || pedals_) && (!wantShifter || shifter_))
             return;
         if (now < nextEnumerate_)
             return;
@@ -961,6 +977,45 @@ namespace ps2x::iop::gt4
         }
         if (wheel_ && separatePedals && !pedals_)
             openPedals(list);
+        if (wheel_ && wantShifter && !shifter_)
+            openShifter(list);
+    }
+
+    void DirectInputWheel::openShifter(const std::vector<DiDeviceInfo> &list)
+    {
+        const DiDeviceInfo *pick = nullptr;
+        for (const auto &d : list)
+            if (lower(d.instance) != lower(wheel_->info().instance) && (!pedals_ || lower(d.instance) != lower(pedals_->info().instance)) &&
+                matchesSpec(d, config_.shifter))
+            {
+                pick = &d;
+                break;
+            }
+        if (!pick)
+            return;
+        std::string error;
+        std::unique_ptr<DiDevice> dev = backend_->open(*pick, options_.window, error);
+        if (!dev)
+        {
+            logLine("cannot open the shifter " + pick->describe() + ": " + error);
+            return;
+        }
+        if (dev->acquire(false) != DiStatus::Ok)
+        {
+            logLine("cannot acquire the shifter " + pick->describe());
+            return;
+        }
+        shifter_ = std::move(dev);
+        logLine("shifter " + shifter_->info().describe());
+    }
+
+    void DirectInputWheel::dropShifter(const char *why)
+    {
+        if (!shifter_)
+            return;
+        logLine(std::string("shifter lost (") + why + ")");
+        shifter_->unacquire();
+        shifter_.reset();
     }
 
     void DirectInputWheel::openWheel(const DiDeviceInfo &info, double now)
@@ -1106,6 +1161,7 @@ namespace ps2x::iop::gt4
             wheel_.reset();
         }
         dropPedals("wheel lost");
+        dropShifter("wheel lost");
         exclusive_ = ffbActive_ = false;
         nextEnumerate_ = now + 1.0;
         std::lock_guard lock(mutex_);
@@ -1213,6 +1269,32 @@ namespace ps2x::iop::gt4
             in.pedalB = pedal(config_.brake, brakeState_, ps.axis[static_cast<unsigned>(config_.brake.axis)]);
         }
         in.buttons = diButtons(s, config_);
+        if (shifter_)
+        {
+            DiState ss;
+            DiStatus p = shifter_->poll(ss);
+            if (p == DiStatus::NotAcquired || p == DiStatus::InputLost)
+                if (shifter_->acquire(false) == DiStatus::Ok)
+                    p = shifter_->poll(ss);
+            if (p == DiStatus::Gone)
+            {
+                dropShifter("unplugged");
+                nextEnumerate_ = now + 1.0;
+            }
+            else if (p == DiStatus::Ok)
+            {
+                uint32_t sb = 0;
+                for (size_t i = 0; i < ss.buttons.size(); ++i)
+                    if (ss.buttons[i] & 0x80u)
+                        sb |= config_.shifterButtons[i];
+                in.buttons |= sb & WheelButton::Mask;
+                if (config_.verbose)
+                    for (size_t i = 0; i < ss.buttons.size(); ++i)
+                        if ((ss.buttons[i] & 0x80u) && !(lastShifter_.buttons[i] & 0x80u))
+                            logLine("input: shifter.button" + std::to_string(i));
+                lastShifter_ = ss;
+            }
+        }
         in.hat = config_.pov >= 0 ? diHat(s.pov[static_cast<unsigned>(config_.pov)]) : 0xff;
         {
             std::lock_guard lock(mutex_);
@@ -1407,6 +1489,11 @@ namespace ps2x::iop::gt4
         {
             pedals_->unacquire();
             pedals_.reset();
+        }
+        if (shifter_)
+        {
+            shifter_->unacquire();
+            shifter_.reset();
         }
         const bool hadForces = ffbActive_;
         exclusive_ = ffbActive_ = false;

@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/pdispu2_resident.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/gt3/pdispu2_sound_setup.h"
 #include "ps2x/iop/gt3/pdispu2_workers.h"
 #include "ps2x/iop/gt3/pdispu2_stream_control.h"
@@ -236,8 +237,8 @@ struct Pdispu2Resident::State {
         if (apply) {
             uint32_t send=0;
             if (!request.send.address || (request.send.address&3) || request.send.size!=848 ||
-                !host.normalizeGuestAddress(request.send.address,send) || !send || send>=0x2000000 ||
-                848>0x2000000-send) return rejected();
+                !host.normalizeGuestAddress(request.send.address,send) || !send || send>=kEeRamBytes ||
+                848>kEeRamBytes-send) return rejected();
             commands.resize(848);
             if (!host.readGuest(send,commands.data(),commands.size())) return rejected();
             auto half=[&](size_t at) { return uint16_t(commands[at]|(commands[at+1]<<8)); };
@@ -467,11 +468,11 @@ RpcResult Pdispu2Resident::handleRpc(const RpcRequest& request) {
     }
     if ((request.sid==0x53505550 || request.sid==0x53505556) && request.function==5) {
         const auto address=request.send.address;
-        const bool ee=address<0x2000000 || address-0x20000000u<0x2000000 ||
-            address-0x80000000u<0x2000000 || address-0xa0000000u<0x2000000;
+        const bool ee=address<kEeRamBytes || address-0x20000000u<kEeRamBytes ||
+            address-0x80000000u<kEeRamBytes || address-0xa0000000u<kEeRamBytes;
         uint32_t physical=0;
         if (!ee || !address || (address&3) || request.send.size<12 || request.send.size>848 || request.receive.size ||
-            !s.host.normalizeGuestAddress(address,physical) || !physical || physical>=0x2000000 || request.send.size>0x2000000-physical || !active()) return rejected();
+            !s.host.normalizeGuestAddress(address,physical) || !physical || physical>=kEeRamBytes || request.send.size>kEeRamBytes-physical || !active()) return rejected();
         { std::lock_guard lock(s.mutex); if (s.busy) return rejected(); s.busy=true; }
         struct Finish { State& s; ~Finish() { std::lock_guard lock(s.mutex); s.busy=false; } } finish{s};
         std::array<uint8_t,12> modes{}; uint32_t persistent=0;

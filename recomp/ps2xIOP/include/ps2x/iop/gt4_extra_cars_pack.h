@@ -21,6 +21,13 @@
 //   96  records: u32 usLba, u32 usStored, u8[32] usSha, u32 newLba, u32 newStored, u32 newReal, u8 type (1 plain,
 //       2 compressed), u8 0, u16 path length, path
 //   then the served TOC (tocSectors * 2048), then the extension (extSectors * 2048), then the SHA-256 of all before.
+// Version 2 (analysis/design/tracks/scripts/build_tracks_pack.py: NEW files, e.g. a new course, and both volumes' TOCs):
+//   0   "GT4XCAR1"   8   u32 version (2)   12 u32 file count   16 char[16] name
+//   32  u64 image bytes   40 u32 region count   44 u32 0   48 u32 extLba   52 u32 extSectors   56 u32 record bytes   60 u32 0
+//   64  regions: u32 lba, u32 sectors, u8[32] SHA-256 of the disc's sectors there (each a volume's rebuilt TOC, which may
+//       run past the disc's TOC sectors over files the pack moved into the extension)
+//   then the records as version 1 (a NEW file has usLba 0 and usStored 0: nothing on the disc to check), then each
+//   region's served bytes in order, then the extension, then the SHA-256 of all before.
 
 #include <algorithm>
 #include <array>
@@ -124,6 +131,7 @@ namespace ps2x::iop::gt4::extracars
         uint32_t usLba = 0, usStored = 0;
         Digest usSha{};     // the US disc's stored bytes
         uint32_t newLba = 0, newStored = 0, newReal = 0;
+        bool isNew() const { return usLba == 0 && usStored == 0; } // (version 2) not on the disc: added
     };
 
     class Pack
@@ -150,22 +158,54 @@ namespace ps2x::iop::gt4::extracars
                 why = "the pack is damaged (its SHA-256 does not match)";
                 return nullptr;
             }
-            if (le32(8) != 1)
+            const uint32_t version = le32(8);
+            if (version != 1 && version != 2)
             {
-                why = "pack version " + std::to_string(le32(8)) + " (this GT4 reads version 1)";
+                why = "pack version " + std::to_string(version) + " (this GT4 reads versions 1 and 2)";
                 return nullptr;
             }
             const uint32_t count = le32(12);
             p->name_.assign(reinterpret_cast<const char *>(b.data() + 16), strnlen(reinterpret_cast<const char *>(b.data() + 16), 16));
             p->imageBytes_ = uint64_t(le32(32)) | (uint64_t(le32(36)) << 32);
-            p->tocLba_ = le32(40);
-            p->tocSectors_ = le32(44);
-            std::memcpy(p->tocSha_.data(), b.data() + 48, 32);
-            p->extLba_ = le32(80);
-            p->extSectors_ = le32(84);
-            const uint32_t recBytes = le32(88);
-            size_t at = 96;
-            if (uint64_t(at) + recBytes + uint64_t(p->tocSectors_) * kSector + uint64_t(p->extSectors_) * kSector != body)
+            uint32_t recBytes = 0;
+            size_t at = 0;
+            if (version == 1)
+            {
+                Region r;
+                r.lba = le32(40);
+                r.sectors = le32(44);
+                std::memcpy(r.sha.data(), b.data() + 48, 32);
+                p->regions_.push_back(r);
+                p->extLba_ = le32(80);
+                p->extSectors_ = le32(84);
+                recBytes = le32(88);
+                at = 96;
+            }
+            else
+            {
+                const uint32_t nreg = le32(40);
+                p->extLba_ = le32(48);
+                p->extSectors_ = le32(52);
+                recBytes = le32(56);
+                at = 64;
+                if (nreg == 0 || nreg > 16 || at + uint64_t(nreg) * 40 > body)
+                {
+                    why = "the pack's region list is damaged";
+                    return nullptr;
+                }
+                for (uint32_t i = 0; i < nreg; ++i, at += 40)
+                {
+                    Region r;
+                    r.lba = le32(at);
+                    r.sectors = le32(at + 4);
+                    std::memcpy(r.sha.data(), b.data() + at + 8, 32);
+                    p->regions_.push_back(r);
+                }
+            }
+            uint64_t served = 0;
+            for (const Region &r : p->regions_)
+                served += uint64_t(r.sectors) * kSector;
+            if (uint64_t(at) + recBytes + served + uint64_t(p->extSectors_) * kSector != body)
             {
                 why = "the pack's sizes do not add up";
                 return nullptr;
@@ -198,13 +238,23 @@ namespace ps2x::iop::gt4::extracars
                 at += n;
                 p->files_.push_back(std::move(f));
             }
-            if (at != recEnd || p->tocSectors_ == 0 || p->extLba_ == 0 || uint64_t(p->extLba_) * kSector != p->imageBytes_)
+            if (at != recEnd || p->extLba_ == 0 || uint64_t(p->extLba_) * kSector != p->imageBytes_)
             {
                 why = "the pack's layout is damaged";
                 return nullptr;
             }
-            p->toc_ = recEnd;
-            p->ext_ = recEnd + size_t(p->tocSectors_) * kSector;
+            size_t data = recEnd;
+            for (Region &r : p->regions_)
+            {
+                if (r.sectors == 0 || uint64_t(r.lba + r.sectors) * kSector > p->imageBytes_)
+                {
+                    why = "the pack's layout is damaged";
+                    return nullptr;
+                }
+                r.data = data;
+                data += size_t(r.sectors) * kSector;
+            }
+            p->ext_ = data;
             return p;
         }
 
@@ -229,14 +279,21 @@ namespace ps2x::iop::gt4::extracars
                 why = "the disc image is " + std::to_string(imageBytes) + " bytes, not the US disc's " + std::to_string(imageBytes_);
                 return false;
             }
-            std::vector<uint8_t> buf(size_t(tocSectors_) * kSector);
-            if (!read(uint64_t(tocLba_) * kSector, buf.data(), buf.size()) || sha256(buf.data(), buf.size()) != tocSha_)
+            std::vector<uint8_t> buf;
+            for (const Region &r : regions_)
             {
-                why = "GT4.VOL's table of contents is not the US disc's (SHA-256 " + hexOf(sha256(buf.data(), buf.size()), 6) + "...)";
-                return false;
+                buf.resize(size_t(r.sectors) * kSector);
+                if (!read(uint64_t(r.lba) * kSector, buf.data(), buf.size()) || sha256(buf.data(), buf.size()) != r.sha)
+                {
+                    why = "the disc's sectors at LBA " + std::to_string(r.lba) + " (a volume's table of contents) are not the US disc's (SHA-256 " +
+                          hexOf(sha256(buf.data(), buf.size()), 6) + "...)";
+                    return false;
+                }
             }
             for (const PackFile &f : files_)
             {
+                if (f.isNew())
+                    continue; // a file the disc does not have
                 buf.resize(f.usStored);
                 if (!read(uint64_t(f.usLba) * kSector, buf.data(), buf.size()) || sha256(buf.data(), buf.size()) != f.usSha)
                 {
@@ -256,9 +313,17 @@ namespace ps2x::iop::gt4::extracars
                 if (lo < hi)
                     std::memcpy(data + (lo - offset), bytes_.data() + from + (lo - base), size_t(hi - lo));
             };
-            copy(uint64_t(tocLba_) * kSector, uint64_t(tocSectors_) * kSector, toc_);
+            for (const Region &r : regions_)
+                copy(uint64_t(r.lba) * kSector, uint64_t(r.sectors) * kSector, r.data);
             copy(uint64_t(extLba_) * kSector, uint64_t(extSectors_) * kSector, ext_);
         }
+
+        struct Region
+        {
+            uint32_t lba = 0, sectors = 0;
+            Digest sha{};
+            size_t data = 0; // where its served bytes sit in the pack
+        };
 
         const std::string &name() const { return name_; }
         const std::vector<PackFile> &files() const { return files_; }
@@ -266,8 +331,9 @@ namespace ps2x::iop::gt4::extracars
         uint64_t extEnd() const { return uint64_t(extLba_ + extSectors_) * kSector; } // the served disc's end
         uint32_t extLba() const { return extLba_; }
         uint32_t extSectors() const { return extSectors_; }
-        uint32_t tocLba() const { return tocLba_; }
-        uint32_t tocSectors() const { return tocSectors_; }
+        const std::vector<Region> &regions() const { return regions_; }
+        uint32_t tocLba() const { return regions_.front().lba; } // GT4.VOL's TOC (the first region)
+        uint32_t tocSectors() const { return regions_.front().sectors; }
         Digest digest() const { return sha256(bytes_.data(), bytes_.size()); }
 
     private:
@@ -275,9 +341,9 @@ namespace ps2x::iop::gt4::extracars
         std::vector<uint8_t> bytes_;
         std::string name_;
         uint64_t imageBytes_ = 0;
-        uint32_t tocLba_ = 0, tocSectors_ = 0, extLba_ = 0, extSectors_ = 0;
-        Digest tocSha_{};
-        size_t toc_ = 0, ext_ = 0;
+        uint32_t extLba_ = 0, extSectors_ = 0;
+        std::vector<Region> regions_;
+        size_t ext_ = 0;
         std::vector<PackFile> files_;
     };
 

@@ -37,6 +37,9 @@ namespace gt4stock
     std::string sizeText(uint64_t bytes);       // "1.5 MB", "5.31 GB", "964 bytes"
     std::string groupedNumber(uint64_t value);  // "5,314,478,080"
     std::string timeText(fs::file_time_type t); // "3 Oct 2026 15:27"
+    // A file time <-> the system clock (std::chrono::clock_cast, which libc++ / llvm-mingw does not have).
+    std::chrono::system_clock::time_point toSystemTime(fs::file_time_type t);
+    fs::file_time_type toFileTime(std::chrono::system_clock::time_point t);
     std::string nowText();                      // "2026-10-04 19:02"
     std::string nowFileStamp();                 // "2026-10-04_1902-05" (seconds, for file names)
 

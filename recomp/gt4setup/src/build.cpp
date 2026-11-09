@@ -297,6 +297,7 @@ int cmdBuild(const Args &args)
         fs::create_directories(install);
         // game\ first (GT4.exe without its CORE.elf would not start), then GT4.exe. Only the disc's files are copied
         // over: game\ also holds the memory cards (mc0, mc1) and GT4's cache, which stay as they are.
+        fs::create_directories(install / "game"); // (a new release folder has none yet)
         for (const fs::directory_entry &e : fs::recursive_directory_iterator(game)) {
             const fs::path to = install / "game" / fs::relative(e.path(), game);
             if (e.is_directory())

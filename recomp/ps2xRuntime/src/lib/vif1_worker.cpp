@@ -103,6 +103,24 @@ namespace vif1lat
         if (d > noticeMax.load())
             noticeMax.store(d);
     }
+    // (the handler's way from notice to resume: queued on a guest thread's invocation stack, its code starting)
+    std::atomic<uint64_t> pushN{0}, pushSum{0}, startN{0}, startSum{0};
+    void notePush()
+    {
+        const uint64_t n = noticeNs.load(std::memory_order_relaxed);
+        if (!n)
+            return;
+        pushSum += nowNs() - n;
+        ++pushN;
+    }
+    void noteHandlerStart()
+    {
+        const uint64_t n = noticeNs.load(std::memory_order_relaxed);
+        if (!n)
+            return;
+        startSum += nowNs() - n;
+        ++startN;
+    }
     void noteResume()
     {
         const uint64_t n = noticeNs.exchange(0, std::memory_order_relaxed);
@@ -453,6 +471,11 @@ void Vif1Worker::reportStats()
         std::fprintf(stderr, "[vif1-worker] 10 s: I-bit raised -> EE takes it: %llu, avg %.1f us, max %.1f us; EE takes it -> FBRST.STC: %llu, avg %.1f us, max %.1f us\n",
                      (unsigned long long)nn, nn ? ns / 1e3 / nn : 0.0, noticeMax.exchange(0) / 1e3, (unsigned long long)hn, hn ? hs / 1e3 / hn : 0.0,
                      handlerMax.exchange(0) / 1e3);
+        {
+            const uint64_t pn2 = pushN.exchange(0), ps2 = pushSum.exchange(0), sn2 = startN.exchange(0), ss2 = startSum.exchange(0);
+            std::fprintf(stderr, "[vif1-worker] 10 s: EE takes it -> handler queued on a thread: %llu, avg %.1f us; -> handler code starts: %llu, avg %.1f us\n",
+                         (unsigned long long)pn2, pn2 ? ps2 / 1e3 / pn2 : 0.0, (unsigned long long)sn2, sn2 ? ss2 / 1e3 / sn2 : 0.0);
+        }
     }
     lastStalls = stalls;
     lastStallNs = stallNs;
@@ -495,3 +518,5 @@ void Vif1Worker::reportStats()
 }
 
 void vif1latNoteNotice() { vif1lat::noteNotice(); }
+void vif1latNotePush() { vif1lat::notePush(); }
+void vif1latNoteHandlerStart() { vif1lat::noteHandlerStart(); }

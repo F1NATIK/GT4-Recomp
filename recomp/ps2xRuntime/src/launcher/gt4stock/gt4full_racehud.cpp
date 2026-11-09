@@ -1402,7 +1402,7 @@ namespace gt4stock
                 }
                 y += 38;
                 y += ui_.wrap("GT4 draws its mirror in the bumper view; Every view draws it in the others too. Unticked: off on the screen, still on a "
-                              "phone (Multi-screen). Moved, GT4's own place shows the road (Vulkan only).",
+                              "phone (Telemetry screen). Moved, GT4's own place shows the road (Vulkan only).",
                               cx0, y, cw, 12, t.muted) + 8;
             }
             else

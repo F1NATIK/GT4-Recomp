@@ -26,8 +26,12 @@
 
 class GS;
 
-constexpr uint32_t PS2_RAM_SIZE = 32u * 1024u * 1024u; // 32MB
-constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;   // Mask for 32MB alignment
+// The PS2's own 32 MB of main RAM: what the game is told it has (GetMemorySize, stacks and heaps at its top).
+constexpr uint32_t PS2_GUEST_RAM_SIZE = 32u * 1024u * 1024u;
+// The host backing for guest RAM: the PS2's 32 MB plus 32 MB above it that only the native build uses (GT4: courses
+// bigger than the PS2's 12 MB course buffer, gt4_tracks.h). Guest addresses wrap at this size.
+constexpr uint32_t PS2_RAM_SIZE = 64u * 1024u * 1024u;
+constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;
 constexpr uint32_t PS2_RAM_BASE = 0x00000000;          // Physical base of RDRAM
 constexpr uint32_t PS2_SCRATCHPAD_BASE = 0x70000000;
 constexpr uint32_t PS2_SCRATCHPAD_ALIAS_BASE = 0xF0000000;
@@ -479,6 +483,19 @@ public:
     std::array<bool, 2> m_vifDeferredDmac{};
     std::atomic<uint32_t> m_pendingVifInterrupts{0u};
     std::atomic<uint32_t> m_pendingGsInterrupts{0u};
+
+public:
+    // Called on the VIF1 worker the moment a stalling I-bit is raised (before its run returns and the normal
+    // wake is posted): the EE's next checkpoint then takes the interrupt. GT3_VIF1_EARLY_NUDGE=0: off.
+    void setVif1StallNudge(void (*fn)(void *), void *user)
+    {
+        m_vif1StallNudge = fn;
+        m_vif1StallNudgeUser = user;
+    }
+
+private:
+    void (*m_vif1StallNudge)(void *) = nullptr;
+    void *m_vif1StallNudgeUser = nullptr;
     void processVifInput(uint32_t channel, const uint8_t *data, uint32_t sizeBytes);
     void executeVIF0Commands(const uint8_t *data, uint32_t sizeBytes);
     void executeVIF1Commands(const uint8_t *data, uint32_t sizeBytes);

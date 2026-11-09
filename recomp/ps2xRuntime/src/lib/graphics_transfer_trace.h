@@ -19,6 +19,9 @@ struct Capture {
     uint64_t bytes=0,records=0,dropped=0;
     std::vector<uint32_t> only; // GT3_GFX_TRACE_ONLY: comma-separated hex kinds to keep
     uint64_t fromTick=0; // GT3_GFX_TRACE_FROM_TICK: skip records before this VSync tick
+    // GT3_GFX_TRACE_MAX_RECORDS / GT3_GFX_TRACE_MAX_MB: the bounds (8192 records, 64 MB by default; a race stretch for
+    // gt3GsReplayBench's frame-by-frame compare of two builds needs more)
+    uint64_t maxRecords=8192, maxBytes=64ull*1024u*1024u;
     bool enabled=false,failed=false;
     Capture() {
         if(const char* prefix=std::getenv("GT3_GFX_TRACE_PREFIX");prefix && *prefix) {
@@ -26,6 +29,8 @@ struct Capture {
             enabled=bool(file);
             if(enabled) file.write("GT3GFX01",8);
             if(const char* from=std::getenv("GT3_GFX_TRACE_FROM_TICK");from && *from) fromTick=std::strtoull(from,nullptr,10);
+            if(const char* n=std::getenv("GT3_GFX_TRACE_MAX_RECORDS");n && *n) maxRecords=std::strtoull(n,nullptr,10);
+            if(const char* mb=std::getenv("GT3_GFX_TRACE_MAX_MB");mb && *mb) maxBytes=std::strtoull(mb,nullptr,10)*1024ull*1024ull;
             if(const char* list=std::getenv("GT3_GFX_TRACE_ONLY");list && *list) {
                 for(const char* p=list;*p;) { char* end=nullptr; only.push_back(uint32_t(std::strtoul(p,&end,16))); p=(*end==',')?end+1:end; if(end==p && *p) break; }
             }
@@ -36,7 +41,7 @@ struct Capture {
         if(!enabled || tick<fromTick) return;
         if(!only.empty() && std::find(only.begin(),only.end(),kind)==only.end()) return;
         std::lock_guard lock(mutex);
-        if(failed || records>=8192 || bytes+size+24>64u*1024u*1024u || (size && !data)) {
+        if(failed || records>=maxRecords || bytes+size+24>maxBytes || (size && !data)) {
             if(dropped++ == 0)
                 std::cerr<<"[graphics-trace] Capture stopped or bounded; later records omitted after "
                          <<records<<" records / "<<bytes<<" bytes\n";

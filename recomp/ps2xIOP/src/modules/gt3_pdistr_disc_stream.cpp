@@ -1,4 +1,5 @@
 #include "ps2x/iop/gt3/pdistr_disc_stream.h"
+#include "ps2x/iop/ee_ram.h"
 #include "ps2x/iop/gt3/pdistr_startup_image.h"
 #include "ps2x/iop/gt3/pdispu2_resident.h"
 #include "ps2x/iop/native_library.h"
@@ -131,12 +132,12 @@ bool PdistrDiscStream::consume(uint32_t destination,uint32_t bytes) {
     if (s.opening || s.stopping || !s.context || s.failed || bytes>s.sourceBytes-s.consumedBytes) return false;
     const auto chunk=s.capacity/4;
     if (bytes) {
-        const bool eeRam=destination<0x2000000 || destination-0x20000000u<0x2000000 ||
-            destination-0x80000000u<0x2000000 || destination-0xa0000000u<0x2000000;
+        const bool eeRam=destination<kEeRamBytes || destination-0x20000000u<kEeRamBytes ||
+            destination-0x80000000u<kEeRamBytes || destination-0xa0000000u<kEeRamBytes;
         uint32_t physical=0,read=0;
         const uint64_t dma=(uint64_t(bytes)+15)&~uint64_t(15);
         if (!eeRam || !s.host.normalizeGuestAddress(destination,physical) || !physical || (physical&15) ||
-            physical>=0x2000000 || dma>0x2000000-physical || !s.host.readIopMemory(s.context+0x1c,&read,4) || read>=s.capacity) return false;
+            physical>=kEeRamBytes || dma>kEeRamBytes-physical || !s.host.readIopMemory(s.context+0x1c,&read,4) || read>=s.capacity) return false;
         // Validate all chunk geometry before copying any data. Original203c
         // advances the destination once per outer chunk; its fragmented inner
         // copies have a distinct contract that is deliberately still rejected.

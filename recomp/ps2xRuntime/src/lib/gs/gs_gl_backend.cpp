@@ -4140,7 +4140,11 @@ void main()
     // copy. Four regions, each fenced after its last use before it is reused.
     GLuint uploadRing = 0;
     uint8_t *uploadRingPtr = nullptr;
-    static constexpr size_t kRingRegion = 8u << 20u, kRingRegions = 4u;
+    // Region size: 32 MB where the whole ring fits one storage block and a heap with room (vkgl logs and checks the
+    // heap), else 8 MB. A batch bigger than a region takes the orphaned-buffer path in flushBatch (Tokyo R246's big
+    // batches did; GT3_GS_GL_RING_MB=8 keeps the old size).
+    static constexpr size_t kRingRegions = 4u;
+    size_t kRingRegion = 8u << 20u;
     size_t ringOffset = 0; // write position in bytes, within region ringRegion
     size_t ringRegion = 0; // region being filled
     GLsync ringFence[kRingRegions] = {};
@@ -4576,6 +4580,15 @@ void main()
     // compares each with the field two before it (fieldTex[2] / [3] are made
     // when that mode is first used).
     GLuint presentProgram = 0, presentFbo = 0;
+    // GT4's angled triple screens (gt4triple, ps2_runtime.cpp): the left / right side screen's view, copied out of GT4's 3D
+    // buffer at its side pass's end marker (0x7a code), at the buffer's own samples per GS pixel (sideSx / sideSy); fresh
+    // until the next presentation, which puts them either side of the middle picture.
+    GLuint sideTex[2] = {0, 0};
+    int sideSx[2] = {0, 0}, sideSy[2] = {0, 0};
+    bool sideFresh[2] = {false, false};
+    uint64_t tripleDrawn = 0, tripleDrawnAt = 0;
+    uint32_t sideAgeOf[2] = {1000u, 1000u}; // presentations since each side view was last kept
+    GLuint sideProgram = 0;   // the side views' shader (~0u: it did not build)
     GLuint fieldTex[4] = {0, 0, 0, 0};
     uint64_t fieldTick[4] = {~0ull, ~0ull, ~0ull, ~0ull};
     uint64_t fieldSeq[4] = {0, 0, 0, 0};
@@ -5212,6 +5225,10 @@ void main()
             const GLuint vsI = compile(GL_VERTEX_SHADER, header + gsgl::kVertexShader);
             const GLuint fsI = compile(GL_FRAGMENT_SHADER, version + "#extension GL_ARB_fragment_shader_interlock : require\n#define GS_INTERLOCK 1\n" +
                                                                header.substr(version.size()) + gsgl::kFragmentShader);
+            if (!fsI) // (AMD's driver lists the extension but its compiler refuses the layout: harmless, see the line below)
+                std::cerr << "[gs-gl] the shader compile failure above is the interlock program's: this driver lists the "
+                             "extension but cannot build it; blending uses overlap levels instead"
+                          << std::endl;
             if (vsI && fsI)
             {
                 interlockProgram = glCreateProgram();
@@ -5443,15 +5460,33 @@ void main()
             glGenBuffers(1, &uploadRing);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, uploadRing);
             const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-            bufferStorage(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(kRingRegion * kRingRegions), nullptr, flags);
-            uploadRingPtr = static_cast<uint8_t *>(
-                glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(kRingRegion * kRingRegions), flags));
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
             GLint maxBlock = 0;
             glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maxBlock);
-            ringWhole = uploadRingPtr && static_cast<uint64_t>(static_cast<uint32_t>(maxBlock)) >= kRingRegion * kRingRegions;
+            const uint64_t maxBlockBytes = static_cast<uint32_t>(maxBlock);
+            const char *mb = std::getenv("GT3_GS_GL_RING_MB");
+            const size_t wantMb = mb && *mb ? static_cast<size_t>(std::strtoul(mb, nullptr, 10)) : 32u;
+            for (size_t regionMb : {wantMb, size_t{8}})
+            {
+                // (Bigger than 8 MB only where the whole ring still fits one storage block: ringWhole.)
+                if (regionMb < 8u || (regionMb > 8u && maxBlockBytes < (static_cast<uint64_t>(regionMb) << 20u) * kRingRegions))
+                    continue;
+                kRingRegion = regionMb << 20u;
+                bufferStorage(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(kRingRegion * kRingRegions), nullptr, flags);
+                uploadRingPtr = static_cast<uint8_t *>(
+                    glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(kRingRegion * kRingRegions), flags));
+                if (uploadRingPtr || regionMb == 8u)
+                    break;
+                // (Storage refused, e.g. vkgl's heap check: a new buffer name for the smaller ring.)
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+                glDeleteBuffers(1, &uploadRing);
+                glGenBuffers(1, &uploadRing);
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, uploadRing);
+            }
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            ringWhole = uploadRingPtr && maxBlockBytes >= kRingRegion * kRingRegions;
             std::cerr << "[gs-gl] primitive upload ring " << (uploadRingPtr ? "mapped" : "unavailable") << (ringWhole ? ", bound whole" : "")
-                      << std::endl;
+                      << ": " << kRingRegions << " x " << (kRingRegion >> 20u) << " MB regions, max storage block " << (maxBlockBytes >> 20u)
+                      << " MB" << std::endl;
         }
         glGenBuffers(1, &stateBuffer);
         glGenFramebuffers(1, &fbo);
@@ -8018,6 +8053,26 @@ void main()
     {
         const char *fast = std::getenv("GT3_GS_GL_FAST");
         fastBlend = scaled() && ((fast && *fast) ? std::strcmp(fast, "0") != 0 : scaleX * scaleY >= 8);
+        // An AMD card with the frames shown through OpenGL (GT3_RENDERER=gl or GT4_VK_PRESENT=gl): fast mode's pictures came
+        // out black after the first menu (2026-10-31, RX 9070 XT, runs gl4-fast; exact drawing and the Vulkan presenter
+        // show them). Exact drawing there, which shows them; GT3_GS_GL_FAST_AMD_GL=1 (test) keeps fast mode.
+        if (fastBlend)
+        {
+            auto envIs = [](const char *name, const char *value) {
+                const char *v = std::getenv(name);
+                return v && std::strcmp(v, value) == 0;
+            };
+            const char *vendor = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
+            const bool amd = vendor && (std::strstr(vendor, "ATI") || std::strstr(vendor, "AMD"));
+            if (amd && (envIs("GT3_RENDERER", "gl") || envIs("GT4_VK_PRESENT", "gl")) && !envIs("GT3_GS_GL_FAST_AMD_GL", "1"))
+            {
+                fastBlend = false;
+                static bool said = false;
+                if (!said)
+                    std::cerr << "[gs-gl] AMD card, frames through OpenGL: exact drawing (fast mode shows black pictures there)" << std::endl;
+                said = true;
+            }
+        }
         const char *ft = std::getenv("GT3_GS_GL_FAST_TEXTURES");
         fastTexturesActive = fastBlend && colourProgram && ((ft && *ft) ? std::strcmp(ft, "0") != 0 : scaleX * scaleY >= 16);
         const char *ftg = std::getenv("GT3_GS_GL_FAST_TARGETS");
@@ -11015,12 +11070,31 @@ void main()
         else
         {
         ringBound = false;
+        // (A batch too big for a ring region, or no ring.) GT3_GS_GL_FAST_FALLBACK=1 (off by default until its proof
+        // run, Build 73): the buffers are orphaned before each upload, so draws already recorded keep their storage and
+        // this one gets fresh storage, which vkgl's BufferSubData then fills in place instead of first copying the
+        // whole buffer (Tokyo R246 at 8 MB regions: 87% of this thread). Off: as before (grown when too small).
+        static const bool fastFallback = envFlag("GT3_GS_GL_FAST_FALLBACK", false);
+        static uint64_t fallbacks = 0;
+        static size_t largest = 0;
+        static auto lastLog = std::chrono::steady_clock::time_point{};
+        largest = std::max(largest, bytes);
+        if (const auto now = std::chrono::steady_clock::now(); ++fallbacks == 1u || now - lastLog >= std::chrono::seconds(10))
+        {
+            lastLog = now;
+            std::fprintf(stderr, "[gs-gl] batches past the upload ring, total: %llu, largest %zu KB (ring regions %zu MB, fast fallback %s)\n",
+                         static_cast<unsigned long long>(fallbacks), largest >> 10u, uploadRingPtr ? kRingRegion >> 20u : size_t{0},
+                         fastFallback ? "on" : "off");
+        }
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, primBuffer);
         if (bytes > primBufferBytes)
         {
             primBufferBytes = std::max(bytes, primBufferBytes * 2u);
-            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(primBufferBytes), nullptr, GL_STREAM_DRAW);
+            if (!fastFallback)
+                glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(primBufferBytes), nullptr, GL_STREAM_DRAW);
         }
+        if (fastFallback)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(primBufferBytes), nullptr, GL_STREAM_DRAW);
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(bytes), prims.data());
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, primBuffer);
         const size_t stateBytes = states.size() * sizeof(GpuState);
@@ -11028,8 +11102,11 @@ void main()
         if (stateBytes > stateBufferBytes)
         {
             stateBufferBytes = std::max(stateBytes, stateBufferBytes * 2u);
-            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(stateBufferBytes), nullptr, GL_STREAM_DRAW);
+            if (!fastFallback)
+                glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(stateBufferBytes), nullptr, GL_STREAM_DRAW);
         }
+        if (fastFallback)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(stateBufferBytes), nullptr, GL_STREAM_DRAW);
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(stateBytes), states.data());
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, stateBuffer);
         }
@@ -12553,10 +12630,29 @@ void GSGlBackend::submitPrimitive(const GSPrimitiveBatch &batch, bool sameState)
     const bool picArmed = gt4hudpic::gsArmed();
     static const bool mirrorMove = gt4hudmove::mirrorMoved(); // (GT4_HUD_MOVE's mirror: the page's path, then drawn at its place)
     // (and while a page watches the mirror or GT4 draws it in every view, whatever GT4_MIRROR: read after its pass)
-    if ((mirrorPage || picArmed || mirrorMove || gt4mirror::wanted() || gt4mirror::forcing()) && !inJitter && batch.state.context.frame.fbp == 0xd2u)
+    // (the draw's own fields first: the switches behind them took a clock read or a lock for every primitive)
+    if (batch.state.context.frame.fbp == 0xd2u && !inJitter && (mirrorPage || picArmed || mirrorMove || gt4mirror::wanted() || gt4mirror::forcing()))
         m_impl->mirrorKeepRoad(batch);
-    if ((mirrorPage || mirrorMove || gt4mirror::wanted() || gt4hudpic::gsBusy()) && !inJitter && batch.state.prim.tme &&
-        batch.state.context.tex0.tbp0 == 0x1a40u && batch.state.context.frame.fbp != 0xd2u)
+    if (batch.state.context.frame.fbp == 0xd2u)
+        ++m_impl->tripleDrawn; // (GT4_TRIPLE_LOG: draws into GT4's 3D buffer between the side markers)
+    {
+        // (GT4_TRIPLE_LOG: how GT4 copies its 3D buffer to the shown one: the side views must look the same)
+        static const bool tlog = std::getenv("GT4_TRIPLE_LOG") != nullptr;
+        static int copyLog = 0;
+        if (tlog && copyLog < 40 && batch.state.prim.tme && (batch.state.context.tex0.tbp0 == 0x1a40u || batch.state.context.tex0.tbp0 == 0u) && batch.state.context.tex0.psm <= 2u && batch.state.context.frame.fbp != 0xd2u &&
+            batch.vertexCount)
+        {
+            ++copyLog;
+            const auto &c = batch.state.context;
+            const GSVertex &v = batch.vertices[0];
+            std::fprintf(stderr, "[gt4-triple] 3D copy: prim %d abe %d tfx %u tcc %u rgba %u %u %u %u, alpha %016llx, frame fbp %03x psm %u, tex psm %u, xy %.0f,%.0f, colclamp %llu dthe %llu\n",
+                         static_cast<int>(batch.state.prim.type), batch.state.prim.abe ? 1 : 0, c.tex0.tfx, c.tex0.tcc, v.r, v.g, v.b, v.a,
+                         static_cast<unsigned long long>(c.alpha), c.frame.fbp, static_cast<unsigned>(c.frame.psm), c.tex0.psm, v.x, v.y,
+                         static_cast<unsigned long long>(batch.state.colclamp), static_cast<unsigned long long>(batch.state.dthe));
+        }
+    }
+    if (batch.state.prim.tme && batch.state.context.tex0.tbp0 == 0x1a40u && batch.state.context.frame.fbp != 0xd2u && !inJitter &&
+        (mirrorPage || mirrorMove || gt4mirror::wanted() || gt4hudpic::gsBusy()))
     {
         if (mirrorMove)
             m_impl->movedCopyFbp = batch.state.context.frame.fbp;
@@ -15133,6 +15229,67 @@ void GSGlBackend::TextureFlush()
 void GSGlBackend::Marker(uint32_t code)
 {
 #if defined(VKGL_REDIRECT) && defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
+    // GT4's angled triple screens (gt4triple): a side pass ended; its view is in GT4's 3D buffer (FBP in bits 8-16), kept
+    // for the next presentation.
+    if ((code >> 24) == 0x7au)
+    {
+        if (!m_glReady)
+            return;
+        Impl &im = *m_impl;
+        im.flushPendingPatches();
+        im.flushBatch();
+        if ((code & 0xf0u) == 0xf0u)
+        {
+            static int n = 0;
+            if (n++ < 60)
+                std::fprintf(stderr, "[gt4-triple] pass %u begins: %llu draws into the 3D buffer since the last marker\n", code & 0xfu,
+                             static_cast<unsigned long long>(im.tripleDrawn - im.tripleDrawnAt));
+            im.tripleDrawnAt = im.tripleDrawn;
+            return;
+        }
+        const int side = (code & 0xffu) == 1u ? 0 : 1;
+        const uint32_t fbp = (code >> 8) & 0x1ffu;
+        decltype(im.targets.front().get()) src = nullptr;
+        for (const auto &tp : im.targets)
+            if (tp && !tp->depth && tp->tex && tp->fbp == fbp && tp->width >= 640 && tp->height >= 448 && (!src || tp->lastUse > src->lastUse))
+                src = tp.get();
+        static int said = 0;
+        static const bool tlogAll = std::getenv("GT4_TRIPLE_LOG") != nullptr;
+        static int listed = 0;
+        if (tlogAll && listed < 12)
+        {
+            ++listed;
+            for (const auto &tp : im.targets)
+                if (tp && tp->fbp == fbp)
+                    std::fprintf(stderr, "[gt4-triple]   target FBP %03x: %dx%d %s tex %u at %dx%d, tall %d, last use %llu (frame %llu)\n", fbp, tp->width, tp->height,
+                                 tp->depth ? "depth" : "colour", tp->tex, tp->sx, tp->sy, tp->tall ? 1 : 0, static_cast<unsigned long long>(tp->lastUse),
+                                 static_cast<unsigned long long>(im.frameCounter));
+        }
+        if (!src)
+        {
+            if (said++ < 4)
+                std::fprintf(stderr, "[gt4-triple] the %s side's view: no 640 x 448 target at FBP %03x\n", side ? "right" : "left", fbp);
+            return;
+        }
+        if (!im.sideTex[side] || im.sideSx[side] != src->sx || im.sideSy[side] != src->sy)
+        {
+            if (im.sideTex[side])
+                glDeleteTextures(1, &im.sideTex[side]);
+            im.sideTex[side] = im.makeColorTexture(640 * src->sx, 448 * src->sy);
+            im.sideSx[side] = src->sx;
+            im.sideSy[side] = src->sy;
+        }
+        // (an image copy: a blit through the renderer darkened the colours like a gamma curve, 71 -> 15)
+        glCopyImageSubData(src->tex, GL_TEXTURE_2D, 0, 0, 0, 0, im.sideTex[side], GL_TEXTURE_2D, 0, 0, 0, 0, 640 * src->sx, 448 * src->sy, 1);
+        im.sideFresh[side] = true;
+        static const bool tlog = std::getenv("GT4_TRIPLE_LOG") != nullptr;
+        if (said++ < 4 || (tlog && said < 400))
+            std::fprintf(stderr, "[gt4-triple] the %s side's view kept: FBP %03x, %d x %d samples per GS pixel, %llu draws into it since the last marker, %dx%d tex %u frame %llu\n",
+                         side ? "right" : "left", fbp, src->sx, src->sy, static_cast<unsigned long long>(im.tripleDrawn - im.tripleDrawnAt), src->width,
+                         src->height, src->tex, static_cast<unsigned long long>(src->lastUse));
+        im.tripleDrawnAt = im.tripleDrawn;
+        return;
+    }
     gt4hudpic::gsMarker(code); // (the launcher's race pictures: in order with the primitives, on this thread)
     // The frame's RaceDisplay draw begins: the shown buffer read back as it is now (the 3D copied in, GT4's colours, no HUD).
     uint32_t fbp = 0;
@@ -15774,6 +15931,19 @@ static bool gpuPresent(GSGlBackend::Impl &im, const GSPresentationRequest &reque
     }
 
     gsgl::setPresentRows(height);
+    // GT4's angled triple screens (gt4triple): with both side views fresh, the slot holds three pictures side by side
+    // (left, this one, right); the host gives each its monitor.
+#if defined(VKGL_REDIRECT) && defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
+    // (kept wide while side views came within the last 8 presentations, reused meanwhile: a race frame that takes longer
+    // than a VSync, or one without them, does not flip the slot between one picture and three)
+    for (int s = 0; s < 2; ++s)
+        if (im.sideFresh[s])
+            im.sideAgeOf[s] = 0;
+    const bool triple = im.sideTex[0] && im.sideTex[1] && std::max(im.sideAgeOf[0], im.sideAgeOf[1]) <= 8u && im.dlssOut == 0;
+#else
+    constexpr bool triple = false;
+#endif
+    gsgl::setPresentWide(triple ? 3 : 1);
     const GLuint out = gsgl::beginPresentSlot();
     // (GT4's DLSS: the picture drawn into its input, DLSS into the slot below at the slot's scale)
     GLuint drawInto = out;
@@ -15839,13 +16009,113 @@ static bool gpuPresent(GSGlBackend::Impl &im, const GSPresentationRequest &reque
         im.glStateDirty = true;
     }
 #endif
+#if defined(VKGL_REDIRECT) && defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
+    if (triple && out != 0)
+    {
+        // The middle picture moved to the middle third (the two regions do not overlap), the side views scaled into the
+        // outer thirds (each GT4's whole 640 x 448 3D picture over the slot's picture size).
+        glCopyImageSubData(out, GL_TEXTURE_2D, 0, 0, 0, 0, out, GL_TEXTURE_2D, 0, slotW, 0, 0, slotW, slotH, 1);
+        // The side views as GT4 shows its pictures: GT4 draws its 3D at half brightness and its passes after the scene (left
+        // out of the side passes: a third of the frame's cost) double it. Measured on El Capitan, the same camera in all three
+        // passes: the shown picture is 2 times the 3D buffer's colour (40 -> 82, 56 -> 117, 88 -> 177), whatever the buffer's
+        // alpha (~0x60: GT4's copy is not what scales it); at the seams with the sides at 0 degrees ~2.6 (the middle's own
+        // haze from those passes). 2.3, clamped, opaque (GT4_TRIPLE_GAIN changes it).
+        static const float gain = [] {
+            const char *v = std::getenv("GT4_TRIPLE_GAIN");
+            const float g = v && *v ? static_cast<float>(std::atof(v)) : 2.3f;
+            return g > 0.1f && g < 16.0f ? g : 2.3f;
+        }();
+        if (!im.sideProgram)
+        {
+            const std::string vs = R"GLSL(#version 430 core
+void main()
+{
+    int c = gl_VertexID % 6;
+    vec2 p = vec2((c == 1 || c == 3 || c == 4) ? 1.0 : -1.0, (c == 2 || c == 4 || c == 5) ? 1.0 : -1.0);
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)GLSL";
+            const std::string fs = R"GLSL(#version 430 core
+uniform sampler2D u_tex;
+uniform ivec2 u_origin;
+uniform float u_gain;
+out vec4 o_color;
+void main()
+{
+    // GT4's 3D at half brightness, doubled by its passes after the scene (u_gain 2), clamped, opaque.
+    vec3 c = texelFetch(u_tex, ivec2(gl_FragCoord.xy) - u_origin, 0).rgb;
+    o_color = vec4(min(c * u_gain, vec3(1.0)), 1.0);
+}
+)GLSL";
+            const GLuint svs = GSGlBackend::Impl::compile(GL_VERTEX_SHADER, vs), sfs = GSGlBackend::Impl::compile(GL_FRAGMENT_SHADER, fs);
+            GLint linked = 0;
+            if (svs && sfs)
+            {
+                im.sideProgram = glCreateProgram();
+                glAttachShader(im.sideProgram, svs);
+                glAttachShader(im.sideProgram, sfs);
+                glLinkProgram(im.sideProgram);
+                glGetProgramiv(im.sideProgram, GL_LINK_STATUS, &linked);
+            }
+            if (svs)
+                glDeleteShader(svs);
+            if (sfs)
+                glDeleteShader(sfs);
+            if (!linked)
+            {
+                std::fprintf(stderr, "[gt4-triple] the side views' shader did not build: side screens left black\n");
+                im.sideProgram = ~0u;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, im.presentFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, out, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        for (int s = 0; s < 2 && im.sideProgram != ~0u; ++s)
+        {
+            const int sw = 640 * im.sideSx[s], sh = 448 * im.sideSy[s];
+            if (sw != slotW || sh < slotH)
+            {
+                static bool saidSize = false;
+                if (!saidSize)
+                    saidSize = true, std::fprintf(stderr, "[gt4-triple] side view %dx%d, picture %dx%d: not the same size, side screens left black\n", sw, sh, slotW, slotH);
+                continue;
+            }
+            const int x0 = s == 0 ? 0 : 2 * slotW;
+            glViewport(x0, 0, slotW, slotH);
+            glUseProgram(im.sideProgram);
+            glUniform1i(glGetUniformLocation(im.sideProgram, "u_tex"), 0);
+            glUniform2i(glGetUniformLocation(im.sideProgram, "u_origin"), x0, 0);
+            glUniform1f(glGetUniformLocation(im.sideProgram, "u_gain"), gain);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, im.sideTex[s]);
+            glBindVertexArray(im.vao);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        im.forgetBindings();
+        im.glStateDirty = true;
+        static bool said = false;
+        if (!said)
+            said = true, std::fprintf(stderr, "[gt4-triple] three pictures side by side: %d x %d each\n", slotW, slotH);
+    }
+    for (int s = 0; s < 2; ++s)
+        if (im.sideAgeOf[s] < 1000u)
+            ++im.sideAgeOf[s];
+    im.sideFresh[0] = im.sideFresh[1] = false;
+#endif
     // Labelled with the latch's own tick (`tick` is the shown buffer's), for
     // the host loop's grid pacing.
     gsgl::notePresentTick(ps2x::vblank::composingPresentation());
     // The newest field's line parity for the host's scanline pass (field
     // emphasis); none for a frame without fields or drawn progressive.
     gsgl::notePresentField(halfHeight && mode != 5 ? parity : -1, mode, request.crt, static_cast<int>(height));
-    gsgl::endPresentSlot(static_cast<uint32_t>(slotW), static_cast<uint32_t>(slotH));
+    gsgl::endPresentSlot(static_cast<uint32_t>(slotW * (triple ? 3 : 1)), static_cast<uint32_t>(slotH));
 
     frame.gpuFrame = true;
     frame.width = width;

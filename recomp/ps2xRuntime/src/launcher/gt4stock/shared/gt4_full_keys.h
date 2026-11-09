@@ -59,9 +59,9 @@ namespace gt4fullkeys
         "GT4_CAM_FAR_CHASE", "GT4_CAM_LOOK",               // race cameras: far chase, 360 look (full-m2, Cameras)
         "GT4_CAM_LOOK_STICK",                              // the 360 look takes the right stick in races (take / share)
         "GT4_TRIGGER_RANGE",                               // the triggers' L2 / R2 pressure at full travel (Controllers)
-        "GT4_CAM_VIEWS", "GT4_CAM_LOCK",                   // the view button's views, the tilt (full-m2, MoreCams)
+        "GT4_CAM_VIEWS", "GT4_CAM_LOCK", "GT4_CAM_BONNET", // the view button's views, the tilt, the bonnet camera (full-m2, MoreCams)
         "GT4_CAR_DETAIL", "GT4_WHEEL_DETAIL", "GT4_WHEEL_BLUR", // car and wheel detail, wheel-spin blur (full-m2, Detail)
-        "GT4_SCREENS", "GT4_SCREENS_GEOMETRY",                   // three screens, one wide picture (full-m2, Multi)
+        "GT4_SCREENS", "GT4_SCREENS_GEOMETRY", "GT4_SCREENS_STYLE", "GT4_SCREENS_ANGLE", "GT4_SCREENS_EYE", // three screens: one picture, or angled sides
         "GT4_LUT", "GT4_LUT_STRENGTH",                           // colour LUTs: off, the GT3 look or a .cube file (colour-lut)
         "GT4_TEX_SMOOTH",                                        // texture smoothing at 2x and above (tex-smooth)
         "GT4_SOUND_PACK", "GT4_SOUND_PACK_MAP",                  // engine sound packs: every car, per car (Sound > Sound packs)
@@ -105,7 +105,7 @@ namespace gt4fullkeys
 
     // More race cameras' GT4.exe keys (the view button's views, the tilt): Play passes them only to a GT4.exe that has them
     // (its marker string).
-    inline constexpr const char *kMoreCameras[] = {"GT4_CAM_VIEWS", "GT4_CAM_LOCK"};
+    inline constexpr const char *kMoreCameras[] = {"GT4_CAM_VIEWS", "GT4_CAM_LOCK", "GT4_CAM_BONNET"};
 
     // Car and wheel detail's GT4.exe keys: a GT4.exe without them ignores them; Play passes them only to one that has them
     // (its marker string).
@@ -113,7 +113,7 @@ namespace gt4fullkeys
 
     // Three screens' GT4.exe keys: a GT4.exe without them ignores them; Play passes them only to one that has them (its
     // marker string).
-    inline constexpr const char *kScreens[] = {"GT4_SCREENS", "GT4_SCREENS_GEOMETRY"};
+    inline constexpr const char *kScreens[] = {"GT4_SCREENS", "GT4_SCREENS_GEOMETRY", "GT4_SCREENS_STYLE", "GT4_SCREENS_ANGLE", "GT4_SCREENS_EYE"};
 
     // The internal resolution's GT4.exe keys: an older GT4.exe reads them too, but was never checked with GT4 at a scale,
     // so Play gives such a program native (GT3_GS_GL_SCALE=1) and no drawing key.

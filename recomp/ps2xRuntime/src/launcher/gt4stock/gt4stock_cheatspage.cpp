@@ -384,7 +384,7 @@ namespace gt4stock
         const fs::path source = file ? cardFile(1) : cardDir(1);
         std::error_code ec;
         const auto stamp = fs::exists(source, ec) ? (fs::is_directory(source, ec) ? fs::file_time_type{} : fs::last_write_time(source, ec)) : fs::file_time_type{};
-        const std::string key = pathText(source) + "|" + std::to_string(stamp.time_since_epoch().count()) + "|" +
+        const std::string key = pathText(source) + "|" + std::to_string(static_cast<long long>(stamp.time_since_epoch().count())) + "|" +
                                 (cards_[0].gt4Save ? cards_[0].gt4.when : std::string()) + "|" + (cardFiles_[0].gt4Save ? cardFiles_[0].gt4.when : std::string());
         if (!force && key == cheatSaveKey_)
             return;
@@ -459,14 +459,20 @@ namespace gt4stock
         std::string p2name;
         const bool p2 = player2Ready(&p2name);
 
-        // ---------------- the band: the save's day, Skip the 365-day wait, the in-game card
+        // ---------------- the band: the save's day, No 365-day wait for codes, the in-game card
         // A switch the GT4 program here does not read is drawn off and greyed, with one plain line (1.4 review).
         const CheatSettings ce = cheatsInEffect(cs, gt4_);
         const float c1 = std::floor(cw * 0.29f), c2 = std::floor(cw * 0.645f);
         const float w2 = c2 - c1 - 44, w3 = cw - c2 - 42;
-        const std::string skipText = gt4_.cheats ? "Works from Day 1. Only GT4's menu script changes, in memory. Off = GT4 as shipped."
+        // (developer 2026-11-01: "i push the skip 365 days button but it still says day 5". The switch never moves GT4's Days counter,
+        // and GT4 reads it when it starts: both said here, and a line while GT4 runs.)
+        const char *const skipLabel = "No 365-day wait for codes";
+        const std::string skipText = gt4_.cheats ? "The codes work from Day 1; GT4's Days counter stays as it is. Only GT4's menu script changes, in "
+                                                   "memory. Off = GT4 as shipped."
                                                  : "The GT4 program here does not read this switch: the codes keep GT4's 365-day wait.";
         const std::string backText = "Back up your save first: a code's result is saved.";
+        const std::string runningText = "GT4 is running: these switches take effect when you close GT4 and press Play again.";
+        const bool showRunning = busy() && (gt4_.cheats || gt4_.card);
         // The card sits beside the picture when the bars are wide enough (the monitor, or the laptop with Whole rows), else
         // in a corner over it (CHEATS-TAB-DESIGN.md 6.4). Nothing ticked: the runtime shows all six.
         const std::string cardText = !gt4_.card ? std::string("The GT4 program here has no in-game cheat card.")
@@ -475,7 +481,8 @@ namespace gt4stock
                                                     "is no room. " + cs.key + " again: the next card, then hidden."
                                          : cs.key + " in GT4 shows the ticked cards (all six if none is) beside the picture, or in a corner if there is "
                                                     "no room. " + cs.key + " again: the next card, then hidden.";
-        const float h2 = 44 + ui_.wrapHeight(skipText, w2, 12.5f, Weight::Regular, 1.3f) + 2 + ui_.wrapHeight(backText, w2 - 18, 12.5f, Weight::Regular, 1.3f);
+        const float h2 = 44 + ui_.wrapHeight(skipText, w2, 12.5f, Weight::Regular, 1.3f) + 2 + ui_.wrapHeight(backText, w2 - 18, 12.5f, Weight::Regular, 1.3f) +
+                         (showRunning ? 6 + ui_.wrapHeight(runningText, w2, 12.5f, Weight::Semibold, 1.3f) : 0.0f);
         const float h3 = 44 + ui_.wrapHeight(cardText, w3, 12.5f, Weight::Regular, 1.3f);
         const float bandH = std::floor(std::max(92.0f, std::max(h2, h3) + 12));
         {
@@ -502,15 +509,15 @@ namespace gt4stock
                          cheatSaveState_ == 2 ? t.warn : t.muted);
             }
             ui_.fill(R(x0 + c1, kTop + 16, 1, bandH - 32), t.border);
-            // 2. Skip the 365-day wait
+            // 2. No 365-day wait for codes (GT4_CHEATS noday)
             cx = x0 + c1 + 22;
             {
                 bool shown = false;
                 if (ui_.toggle("cheat-noday", cx, kTop + 16, gt4_.cheats ? cs.noday : shown, gt4_.cheats))
                     markDirty();
             }
-            ui_.text("Skip the 365-day wait", cx + 52, kTop + 16, 15, gt4_.cheats ? t.text : t.muted, Weight::Semibold);
-            ui_.chip(cx + 52 + ui_.textWidth("Skip the 365-day wait", 15, Weight::Semibold) + 10, kTop + 16, "all 5 codes", t.panel2, t.muted, 11);
+            ui_.text(skipLabel, cx + 52, kTop + 16, 15, gt4_.cheats ? t.text : t.muted, Weight::Semibold);
+            ui_.chip(cx + 52 + ui_.textWidth(skipLabel, 15, Weight::Semibold) + 10, kTop + 16, "all 5 codes", t.panel2, t.muted, 11);
             float ty = kTop + 44;
             ty += ui_.wrap(skipText, cx, ty, w2, 12.5f, t.muted, Weight::Regular, 1.3f) + 2;
             {
@@ -528,7 +535,10 @@ namespace gt4stock
                     detailsOpen_ = false;
                     refreshCards();
                 }
+                ty += bh;
             }
+            if (showRunning)
+                ui_.wrap(runningText, cx, ty + 6, w2, 12.5f, t.warn, Weight::Semibold, 1.3f);
             ui_.fill(R(x0 + c2, kTop + 16, 1, bandH - 32), t.border);
             // 3. the in-game cheat card
             cx = x0 + c2 + 22;

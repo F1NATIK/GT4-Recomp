@@ -211,6 +211,10 @@ namespace ps2x::iop::gt4
         Pedal brake{DiAxis::Rz};
         double pedalDeadzone = 0.02;
         std::array<uint32_t, 128> buttons{}; // host button -> WheelButton bit (0 = none)
+        // A separate shifter (the developer's Simagic, its own USB device): "shifter none | <vid>:<pid> | {guid} | <name>", its
+        // buttons by "shifter-button <index> <name>" (developer 2026-10-31)
+        std::string shifter = "none";
+        std::array<uint32_t, 128> shifterButtons{};
         int pov = 0;                         // -1: none
         WheelModel model = WheelModel::DrivingForcePro;
         bool ffb = false;
@@ -338,6 +342,8 @@ namespace ps2x::iop::gt4
         void ensureDevices(double now);
         void openWheel(const DiDeviceInfo &info, double now);
         void openPedals(const std::vector<DiDeviceInfo> &list);
+        void openShifter(const std::vector<DiDeviceInfo> &list);
+        void dropShifter(const char *why);
         void dropWheel(const char *why, double now);
         void dropPedals(const char *why);
         void readInput(double now);
@@ -368,6 +374,7 @@ namespace ps2x::iop::gt4
         std::string backendError_;
         std::unique_ptr<DiDevice> wheel_;
         std::unique_ptr<DiDevice> pedals_;
+        std::unique_ptr<DiDevice> shifter_;
         bool exclusive_ = false;
         bool ffbActive_ = false;
         bool poweredOff_ = false;
@@ -388,6 +395,7 @@ namespace ps2x::iop::gt4
         bool loggedNoWindow_ = false;
         std::array<bool, 4> loggedUnsupported_{};
         DiState lastState_{};
+        DiState lastShifter_{};
         double nextMonitor_ = 0.0;
         DiState monitorState_{};
         DiState monitorPedals_{};

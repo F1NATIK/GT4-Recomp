@@ -892,8 +892,12 @@ namespace gt4hudpic
         g_cv.notify_all();
     }
 
+    bool marker(uint8_t *rdram, uint32_t code) { return putMarker(rdram, code); }
+
     void gsMarker(uint32_t value)
     {
+        if ((value >> 24) == 0x7au)
+            return; // (gt4triple's side-screen markers)
         if (value & kMoveFlag)
             return; // (GT4_HUD_MOVE's own frames: gt4_hud_move.cpp)
         const uint32_t code = value & 0xffu;
@@ -1030,6 +1034,7 @@ namespace gt4hudpic
     void shownReadDropped() {}
     void sceneRead(uint32_t, std::vector<uint8_t> &&, int, int) {}
     void gsMarker(uint32_t) {}
+    bool marker(uint8_t *, uint32_t) { return false; }
     void gsPrimitive(uint32_t, float, float, float, float) {}
     void gsCopy(uint32_t, float, float, float, float) {}
     void noteGameRect(float, float) {}

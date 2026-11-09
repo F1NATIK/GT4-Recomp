@@ -75,6 +75,8 @@ namespace gt4hudpic
     void sceneRead(uint32_t tag, std::vector<uint8_t> &&pixels, int w, int h);
     // A marker from GT4's stream (GS register 0x7f): see gt4_hud_pictures.cpp.
     void gsMarker(uint32_t code);
+    // A marker of another feature's (gt4triple's 0x7a codes) in GT4's packet chain at its cursor, in order with its drawing.
+    bool marker(uint8_t *rdram, uint32_t code);
     // A primitive drawn (GS frame pixels after XYOFFSET, clipped to the scissor) into frame buffer fbp.
     void gsPrimitive(uint32_t fbp, float x0, float y0, float x1, float y1);
     // The frame's copy of the 3D buffer into the shown buffer fbp (its rectangle in that buffer).

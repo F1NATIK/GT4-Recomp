@@ -90,11 +90,15 @@ namespace ps2x::iop::gt4
             return;
         }
         extra_ = pack;
-        extraServed_.assign(pack->files().size() + 1, false);
+        extraServed_.assign(pack->files().size() + pack->regions().size(), false);
+        size_t added = 0;
+        for (const extracars::PackFile &f : pack->files())
+            added += f.isNew() ? 1 : 0;
         host_.log(LogLevel::Info, "[extra-cars] " + name + ": Toyota ESSO Ultraflo Supra (JGTC) '01 added as car 229 (pack " +
                                       path.string() + ", SHA-256 " + extracars::hexOf(pack->digest(), 8) + "...; " +
-                                      std::to_string(pack->files().size()) + " files served from LBA " + std::to_string(pack->extLba()) +
-                                      ", past the image's end, and GT4.VOL's table of contents with their entries; US disc checked)");
+                                      std::to_string(pack->files().size()) + " files (" + std::to_string(added) +
+                                      " new) served from LBA " + std::to_string(pack->extLba()) + ", past the image's end, and " +
+                                      std::to_string(pack->regions().size()) + " table(s) of contents with their entries; US disc checked)");
     }
 
     void Disc::extraCars(uint64_t offset, uint8_t *data, size_t bytes)
@@ -102,19 +106,24 @@ namespace ps2x::iop::gt4
         extra_->apply(offset, data, bytes);
         const uint64_t end = offset + bytes;
         auto touches = [&](uint64_t lba, uint64_t length) { return offset < lba * 2048u + length && lba * 2048u < end; };
-        if (!extraServed_[0] && touches(extra_->tocLba(), uint64_t(extra_->tocSectors()) * 2048u))
+        const size_t nreg = extra_->regions().size();
+        for (size_t r = 0; r < nreg; ++r)
         {
-            extraServed_[0] = true;
-            host_.log(LogLevel::Info, "[extra-cars] served GT4.VOL's table of contents (read at LSN " + std::to_string(offset / 2048u) + ", " +
-                                          std::to_string(bytes) + " bytes)");
+            const extracars::Pack::Region &reg = extra_->regions()[r];
+            if (!extraServed_[r] && touches(reg.lba, uint64_t(reg.sectors) * 2048u))
+            {
+                extraServed_[r] = true;
+                host_.log(LogLevel::Info, std::string("[extra-cars] served ") + (r == 0 ? "GT4.VOL" : "GT4L1.VOL") +
+                                              "'s table of contents (read at LSN " + std::to_string(offset / 2048u) + ", " + std::to_string(bytes) + " bytes)");
+            }
         }
         const std::vector<extracars::PackFile> &files = extra_->files();
         if (offset + bytes <= uint64_t(extra_->extLba()) * 2048u)
             return;
         for (size_t i = 0; i < files.size(); ++i)
-            if (!extraServed_[i + 1] && touches(files[i].newLba, files[i].newStored))
+            if (!extraServed_[i + nreg] && touches(files[i].newLba, files[i].newStored))
             {
-                extraServed_[i + 1] = true;
+                extraServed_[i + nreg] = true;
                 host_.log(LogLevel::Info, "[extra-cars] served " + files[i].path + " (LSN " + std::to_string(files[i].newLba) + ", " +
                                               std::to_string(files[i].newStored) + " bytes stored, " + std::to_string(files[i].newReal) + " real)");
             }

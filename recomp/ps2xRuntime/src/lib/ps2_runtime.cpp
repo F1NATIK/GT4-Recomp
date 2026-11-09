@@ -68,6 +68,7 @@
 #include "gt4_multimon.h" // GT4_MM_*: GT4's own Multi Monitor Mode settings (not the Classic edition)
 #include "gt4_texture_dump.h" // GT4_TEXTURE_DUMP: the texture dumper (not the Classic edition)
 #include "gt4_texture_replace.h" // GT4_TEXTURE_REPLACE: texture replacement (not the Classic edition)
+#include "gt4_tracks.h" // Arcade's courses: the pack's added course, GT4_TRACKS_HIDE (not the Classic edition)
 #include "ps2x/iop/gt4_cheats_served.h" // setVideoOutputHidden (GT4_RACE_MODE=480p: GT4's Video Output line)
 #include "ps2x/iop/gt4_car_state.h"     // Custom Sounds: the race cars' engine state for the sound module
 #endif
@@ -398,7 +399,7 @@ static constexpr int FB_WIDTH = 640;
 static constexpr int FB_HEIGHT = 512;
 static constexpr int DEFAULT_DISPLAY_HEIGHT = 448;
 static constexpr uint32_t DEFAULT_FB_SIZE = FB_WIDTH * FB_HEIGHT * 4;
-static constexpr uint32_t DEFAULT_FB_ADDR = (PS2_RAM_SIZE - DEFAULT_FB_SIZE - 0x10000u);
+static constexpr uint32_t DEFAULT_FB_ADDR = (PS2_GUEST_RAM_SIZE - DEFAULT_FB_SIZE - 0x10000u);
 #if defined(PLATFORM_VITA)
 static constexpr int HOST_WINDOW_WIDTH = 960;
 static constexpr int HOST_WINDOW_HEIGHT = 544;
@@ -441,6 +442,11 @@ struct ProgramHeader
     uint32_t flags;
     uint32_t align;
 };
+
+namespace vif1markers
+{
+    extern std::atomic<uint32_t> last; // (ps2_vif1_interpreter.cpp: the last GT4 marker on the VIF1 stream)
+}
 
 namespace
 {
@@ -497,8 +503,17 @@ namespace
             const bool codeChanged = lastCode.size() != PS2_VU1_CODE_SIZE || std::memcmp(lastCode.data(), code, PS2_VU1_CODE_SIZE) != 0;
             if (codeChanged)
                 lastCode.assign(code, code + PS2_VU1_CODE_SIZE);
-            // header[7]: the vsync tick (low 32 bits), to split kicks into frames.
-            const uint32_t header[8] = {0x4B43494Bu, kind, startPC, top, itop, maxCycles, codeChanged ? 1u : 0u, static_cast<uint32_t>(tick)};
+            // header[7]: the vsync tick (low 28 bits), to split kicks into frames; its top 4 bits the triple screens' pass
+            // (GT4_TRIPLE_LOG's marker 0x7a0000f1 / f2 / f3 last met on the VIF1 stream: 1 left, 2 right, 3 middle; 0 none).
+            uint32_t pass = 0u;
+#if defined(PS2X_GAME_GT4)
+            {
+                const uint32_t m = vif1markers::last.load(std::memory_order_relaxed);
+                pass = (m & 0xfffffff0u) == 0x7a0000f0u ? (m & 0xfu) : 0u;
+            }
+#endif
+            const uint32_t header[8] = {0x4B43494Bu, kind, startPC, top, itop, maxCycles, codeChanged ? 1u : 0u,
+                                        (static_cast<uint32_t>(tick) & 0x0fffffffu) | (pass << 28)};
             std::fwrite(header, sizeof(header), 1, file);
             const uint64_t cycle = vu.cycle();
             std::fwrite(&cycle, sizeof(cycle), 1, file);
@@ -1137,6 +1152,19 @@ namespace gt4wide
 // Not built: angled side screens (that needs GT4 to draw each screen's own view), 6 screens, the HUD on every screen.
 namespace gt4screens
 {
+    // The three screens' window (set at start-up, not --headless): its rectangle, the middle monitor's, and whether it is
+    // over the three now (F11, Alt+Enter and Esc take it to a window on the middle monitor and back).
+    struct Window
+    {
+        bool set = false, full = false;
+        int x = 0, y = 0, w = 0, h = 0;
+        int midX = 0, midY = 0, midW = 0, midH = 0;
+    };
+    Window &window()
+    {
+        static Window w;
+        return w;
+    }
     struct Config
     {
         bool on = false;
@@ -1184,6 +1212,656 @@ namespace gt4screens
         return c;
     }
 }
+
+// Angled triple screens, one GT4 drawing three views (developer 2026-10-30, way B of analysis/design/triple-screen). The side
+// views are GT4's race scene (0x33eab8, which photo mode already re-runs with an off-axis matrix) drawn again with an
+// eye-space matrix at race+0xe36c (identity by default; 0x33eab8 multiplies it into the projection before the
+// perspective). Geometry in middle-screen widths: the eye on the middle screen's axis at GT4's own distance for its 16:9
+// view (the middle screen keeps GT4's picture), each side screen hinged at the middle one's edge plus the gap and turned
+// toward the eye by the angle. Keys (with GT4_SCREENS=3 and its geometry):
+//   GT4_SCREENS_STYLE=angled            the side screens' own views (else: one picture across, as before)
+//   GT4_SCREENS_ANGLE=<degrees>         the side screens' angle in from flat (default 60, the developer's rig)
+//   GT4_TRIPLE_TEST=left|right          (test) the main view drawn as that side screen's view
+namespace gt4triple
+{
+    // A side screen's eye-space matrix (row vectors, v' = v A; GT4's 4 x 4 floats, row-major), side -1 left, +1 right.
+    // zoom: the field of view's zoom over GT4's own (1: GT4's; 1.25: a quarter narrower across), all three screens alike.
+    // shift: the picture moved up by that part of the screen's height (-0.2..0.2; the side screens' up/down offsets).
+    // sideZoom: that side picture alone zoomed about its centre (1: as the geometry gives it).
+    // GT4's race view (16:9) across: the tangent of half its angle. Measured (2026-10-31, the developer's bonnet view "still not
+    // right"): with the sides flat and no bezels, 425 / 276 mm's 0.770 left each side screen repeating 410 of the
+    // middle's 2560 columns; the view is 19% wider, 0.919 (85 degrees across; 6 px left at 0.917). GT4_TRIPLE_HALFTAN (test) overrides it.
+    // Build 68 (developer 2026-10-31, "the chase cameras were perfect in build 50-52"; measured on the r8 grid, the developer's geometry,
+    // 60 degrees, no bezels, joins side against middle): GT4's cameras do not share one field of view. Bonnet and roof
+    // draw 85 degrees across (0.919: joins 1.00 / 1.00-1.01); bumper, close chase, chase and far chase 75 degrees (0.770,
+    // Builds 51-61's value: joins 0.99-1.00, against 1.06-1.37 at 0.919), turned about the camera's own origin (the
+    // Build 63-64 pivots made up for 0.919 on far scenery and put the player's car on the side screens).
+    extern std::atomic<int> g_view;
+    float halfTan()
+    {
+        static const float forced = [] {
+            const char *v = std::getenv("GT4_TRIPLE_HALFTAN");
+            const float f = v ? static_cast<float>(std::atof(v)) : 0.0f;
+            return f > 0.2f && f < 3.0f ? f : 0.0f;
+        }();
+        if (forced > 0.0f)
+            return forced;
+        const int view = g_view.load(std::memory_order_relaxed); // 0 bumper, 1 bonnet, 2 roof, 3 close, 4 chase, 5 far
+        return view == 1 || view == 2 ? 0.919f : 0.770f;
+    }
+    void sideMatrix(int side, float angleDeg, float gap, float out[16], float zoom = 1.0f, float shift = 0.0f, float sideZoom = 1.0f, float tilt = 0.0f)
+    {
+        const float pi = 3.14159265358979f;
+        const float D0 = 0.5f / halfTan(); // the eye's distance for GT4's view, in middle-screen widths
+        const float D = D0 * zoom;                                // ... for the view as zoomed (the geometry below)
+        // (GT4's eye space has x the other way round to this maths: its left screen is the maths' right one. Test
+        // m3, 2026-10-30: the "left" view showed the right side of El Capitan's straight.)
+        side = -side;
+        const float th = angleDeg * pi / 180.0f * static_cast<float>(side);
+        const float c = std::cos(th), sn = std::sin(th), h = 0.5f + gap;
+        const float dSide = h * std::fabs(sn) + D * c;              // the eye to the side screen's plane
+        const float cu = static_cast<float>(side) * (h * c + 0.5f) - D * sn; // the side screen's centre across its own view
+        const float s = dSide / D0, k = cu / D0; // (GT4's projection stays its own: the zoom is in s and k)
+        // (up/down: a vertical lens shift, y + z ky: a whole screen's height is 2 x halfTan x 9 / 16)
+        // (negative: GT4's eye-space y points down the screen; test l1, +12 moved the right picture down)
+        const float ky = -2.0f * halfTan() * (9.0f / 16.0f) * shift; // (the 16:9 view's height)
+        // (the shift by the side view's own depth, sn x + c z, so the whole picture moves: by the middle view's z it tilted,
+        // developer 2026-10-30)
+        const float zs = sideZoom;
+        // (tilt, Build 69, developer 2026-10-31 "remember the old one that tilted the side screens": Builds 54-55's up/down, a
+        // shift by the middle view's depth z alone, which tilts the side picture; a look, not geometry: the lines no longer
+        // run straight across the joins. 0: as Build 68.)
+        const float kt = -2.0f * halfTan() * (9.0f / 16.0f) * tilt;
+        const float m[16] = {zs * (s * c - k * sn), ky * sn, sn, 0.0f,    //
+                             0.0f, zs * s, 0.0f, 0.0f,                     //
+                             zs * (-s * sn - k * c), ky * c + kt, c, 0.0f, //
+                             0.0f, 0.0f, 0.0f, 1.0f};
+        std::memcpy(out, m, sizeof(m));
+    }
+    // Per race camera (developer 2026-10-30, "line up angled triples separately for each camera"): GT4_SCREENS_CAMERAS=
+    // <camera>:<field of view %>,<side angle trim in degrees>,<bezels 1|0>;... with the cameras of gt4cam's views (bumper,
+    // bonnet, roof, close, chase, far: 0-5). Field of view 100 = GT4's own (narrower below: the three screens zoomed in alike,
+    // the middle one keeping its full resolution); the trim is added to GT4_SCREENS_ANGLE; bezels 0 = no gap left out.
+    constexpr int kCameras = 6;
+    constexpr const char *kCameraNames[kCameras] = {"bumper", "bonnet", "roof", "close", "chase", "far"};
+    struct Camera
+    {
+        float fov = 100.0f, trim = 0.0f;
+        bool bezels = true;
+        float upLeft = 0.0f, upRight = 0.0f; // the side screens' pictures up (+) or down (-), % of the screen's height
+        float zoomLeft = 100.0f, zoomRight = 100.0f; // the side screens' pictures zoomed in (above 100) or out, %
+        float tiltLeft = 0.0f, tiltRight = 0.0f; // the side screens' pictures tilted (Builds 54-55's up/down), % of the height
+    };
+    struct Config
+    {
+        bool angled = false;
+        float angle = 60.0f; // (the developer's rig, 2026-10-30)
+        int test = 0; // GT4_TRIPLE_TEST: -1 left, +1 right
+        float eyeMm = 0.0f; // GT4_SCREENS_EYE: the eye to the middle screen in mm (0: GT4's own view, the eye 0.65 widths away)
+        Camera cameras[kCameras];
+    };
+    std::atomic<int> g_view{4}; // gt4cam's view now (chase until it is known)
+    void noteView(int view)
+    {
+        if (view >= 0 && view < kCameras)
+            g_view.store(view, std::memory_order_relaxed);
+    }
+    std::atomic<uint32_t> g_cam{0u}; // the player's CameraOnBoard (gt4cam::edit): its world -> view matrix at +0x100
+    void noteCam(uint32_t cam) { g_cam.store(cam, std::memory_order_relaxed); }
+    // GT4_SCREENS_CAMERAS (or the launcher's live file): <camera>:<fov>,<trim>,<bezels>,<up left>,<up right>;...
+    void parseCameras(const std::string &s, Camera out[kCameras])
+    {
+        std::vector<std::string> items;
+        std::string cur;
+        for (char ch : s)
+            if (ch == ';')
+                items.push_back(cur), cur.clear();
+            else
+                cur += ch;
+        items.push_back(cur);
+        for (const std::string &item : items)
+        {
+            const size_t colon = item.find(':');
+            if (colon == std::string::npos)
+                continue;
+            std::string name = item.substr(0, colon);
+            name.erase(0, name.find_first_not_of(" \t"));
+            for (int i = 0; i < kCameras; ++i)
+                if (name == kCameraNames[i])
+                {
+                    float fov = 100.0f, trim = 0.0f, upL = 0.0f, upR = 0.0f, zL = 100.0f, zR = 100.0f, tL = 0.0f, tR = 0.0f;
+                    int bez = 1;
+                    // (tilt left / right: Build 69's 8th and 9th fields; rows without them: 0, as Build 68)
+                    if (std::sscanf(item.c_str() + colon + 1, "%f,%f,%d,%f,%f,%f,%f,%f,%f", &fov, &trim, &bez, &upL, &upR, &zL, &zR, &tL, &tR) >= 1)
+                    {
+                        out[i].tiltLeft = std::clamp(tL, -20.0f, 20.0f);
+                        out[i].tiltRight = std::clamp(tR, -20.0f, 20.0f);
+                        out[i].fov = std::clamp(fov, 40.0f, 160.0f);
+                        out[i].trim = std::clamp(trim, -30.0f, 30.0f);
+                        out[i].bezels = bez != 0;
+                        out[i].upLeft = std::clamp(upL, -20.0f, 20.0f);
+                        out[i].upRight = std::clamp(upR, -20.0f, 20.0f);
+                        out[i].zoomLeft = std::clamp(zL, 50.0f, 200.0f);
+                        out[i].zoomRight = std::clamp(zR, 50.0f, 200.0f);
+                    }
+                }
+        }
+    }    const Config &config()
+    {
+        static const Config c = [] {
+            Config k;
+            auto env = [](const char *n) {
+                const char *v = std::getenv(n);
+                return std::string(v ? v : "");
+            };
+            k.angled = gt4screens::config().on && env("GT4_SCREENS_STYLE") == "angled";
+            if (const std::string a = env("GT4_SCREENS_ANGLE"); !a.empty())
+                k.angle = std::clamp(static_cast<float>(std::atof(a.c_str())), 0.0f, 80.0f);
+            parseCameras(env("GT4_SCREENS_CAMERAS"), k.cameras);
+            if (const std::string e = env("GT4_SCREENS_EYE"); !e.empty())
+                k.eyeMm = std::clamp(static_cast<float>(std::atof(e.c_str())), 0.0f, 3000.0f);
+            const std::string t = env("GT4_TRIPLE_TEST");
+            k.test = t == "left" ? -1 : t == "right" ? 1 : 0;
+            if (k.angled || k.test)
+                std::fprintf(stderr, "[gt4-triple] angled side screens %s: %.1f degrees%s\n", k.angled ? "on" : "off", k.angle,
+                             k.test ? (k.test < 0 ? "; test: the main view is the left screen's" : "; test: the main view is the right screen's") : "");
+            return k;
+        }();
+        return c;
+    }
+
+    // The launcher's live link (developer 2026-10-30: "can we make it so they adjust when we adjust the sliders"): while GT4 runs,
+    // the launcher's Screens page writes screens-live.txt next to GT4.exe (GT4_SCREENS_ANGLE= and GT4_SCREENS_CAMERAS= lines)
+    // as its sliders move; the presenter reads it again when it changes (pollLive) and these override the start-up ones.
+    std::mutex g_liveMutex;
+    bool g_live = false;
+    float g_liveAngle = 60.0f, g_liveEye = 0.0f;
+    Camera g_liveCams[kCameras];
+    Camera cameraNow(int view)
+    {
+        std::lock_guard<std::mutex> lock(g_liveMutex);
+        return g_live ? g_liveCams[view] : config().cameras[view];
+    }
+    float angleNow()
+    {
+        std::lock_guard<std::mutex> lock(g_liveMutex);
+        return g_live ? g_liveAngle : config().angle;
+    }
+    float eyeNow()
+    {
+        std::lock_guard<std::mutex> lock(g_liveMutex);
+        return g_live ? g_liveEye : config().eyeMm;
+    }
+    // Presenter thread, every frame: true when the live file changed and was taken in.
+    bool pollLive(const std::string &file)
+    {
+        static uint64_t frames = 0;
+        static std::filesystem::file_time_type last{};
+        if (frames++ % 10u != 0u)
+            return false;
+        std::error_code ec;
+        const auto when = std::filesystem::last_write_time(file, ec);
+        if (ec || when == last)
+            return false;
+        last = when;
+        FILE *f = std::fopen(file.c_str(), "r");
+        if (!f)
+            return false;
+        char line[4096];
+        float angle = config().angle, eye = config().eyeMm;
+        Camera cams[kCameras];
+        for (int i = 0; i < kCameras; ++i)
+            cams[i] = config().cameras[i];
+        while (std::fgets(line, sizeof(line), f))
+        {
+            std::string l = line;
+            while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+                l.pop_back();
+            if (l.rfind("GT4_SCREENS_ANGLE=", 0) == 0)
+                angle = std::clamp(static_cast<float>(std::atof(l.c_str() + 18)), 0.0f, 80.0f);
+            else if (l.rfind("GT4_SCREENS_EYE=", 0) == 0)
+                eye = std::clamp(static_cast<float>(std::atof(l.c_str() + 16)), 0.0f, 3000.0f);
+            else if (l.rfind("GT4_SCREENS_CAMERAS=", 0) == 0)
+                parseCameras(l.substr(20), cams);
+        }
+        std::fclose(f);
+        {
+            std::lock_guard<std::mutex> lock(g_liveMutex);
+            g_live = true;
+            g_liveAngle = angle;
+            g_liveEye = eye;
+            for (int i = 0; i < kCameras; ++i)
+                g_liveCams[i] = cams[i];
+        }
+        static int said = 0;
+        if (said++ < 20)
+            std::fprintf(stderr, "[gt4-triple] the launcher's live settings taken in: %.0f degrees\n", angle);
+        return true;
+    }
+    // ---- The side passes (EE thread). The race frame's scene call (0x33e090 -> 0x33eab8, returning to 0x33e098) becomes:
+    // the left side's scene, the right side's, then the middle one as GT4 called it. Each pass is a guest call, not a C++
+    // one: the scene can wait (DMA, semaphores) and the runtime resumes waiting code from its run loop, which a C++ caller
+    // would break (GT3's lesson, gt3_camera.cpp). So the scene's entry (sceneHook) and photo mode's return address after its
+    // own call of the scene (0x33e4b0, sideReturnHook) are hooked: a side pass is the scene entered with that return
+    // address, and when it returns there the next pass starts. Photo mode's own returns there go on as before. Each side
+    // pass draws into GT4's 3D buffer before the middle one (which clears it), with no rear-view mirror and no 2D overlay,
+    // and ends with a GS marker (0x7a code): the renderer keeps that buffer as the side screen's picture (gs_gl_backend.cpp).
+    constexpr uint32_t kScene = 0x33eab8u, kSceneRet = 0x33e098u, kSideRet = 0x33e4b0u, kPost = 0x33f2e8u;
+    enum class Step
+    {
+        Idle,
+        Start, // (the first jump goes through kSideRet: a call left at the scene's own entry reads as a native stub's return)
+        Left,
+        LeftPost,
+        Right,
+        RightPost,
+        Main,
+    };
+    Step g_step = Step::Idle;
+    int g_side = 0; // the side pass under way (-1 left, +1 right; 0: none). Read by dispatchGuestBranch's skips.
+    __m128i g_args[8], g_ra;
+    float g_dt = 0.0f;
+    uint32_t g_race = 0u, g_fbp = 0u;
+    uint8_t g_e36c[64];
+    PS2Runtime::RecompiledFunction g_scene = nullptr, g_photoRest = nullptr;
+    uint64_t g_frames = 0;
+    bool g_skipRight = false; // (GT4_TRIPLE_ALTERNATE: this frame's left pass is its only side pass)
+
+    // A camera's field of view (% of GT4's own across) as the zoom of the view.
+    float zoomFor(float fovPercent)
+    {
+        const float h0 = std::atan(halfTan()), h = h0 * fovPercent / 100.0f;
+        const float z = std::fabs(fovPercent - 100.0f) < 0.01f ? 1.0f : std::tan(h0) / std::tan(h);
+        // (developer 2026-10-30, "can't get bonnet or roof views to line up": GT4's view has the eye 0.55 screen widths from
+        // the middle screen, 38 cm from a 32-inch one. Sat further back, side screens drawn for that eye make what is
+        // near, barriers and the bonnet, far too big. GT4_SCREENS_EYE puts the eye where it is: field of view 100 is
+        // then the view that is right from there, and a camera's field of view a change from that.)
+        // (Build 68: GT4_SCREENS_EYE is ignored. Its zoom went to the side views only, so any eye but GT4's own split them
+        // from the middle one (the developer's 685 mm: the sides ~1.8x the middle). GT4_TRIPLE_EYE_ZOOM=1: as Builds 57-67.)
+        static const bool eyeZoomOn = std::getenv("GT4_TRIPLE_EYE_ZOOM") && std::strcmp(std::getenv("GT4_TRIPLE_EYE_ZOOM"), "1") == 0;
+        if (!eyeZoomOn)
+            return z;
+        const float eye = eyeNow(), w = gt4screens::config().widthMm;
+        const float eyeZoom = eye > 0.0f && w > 0.0f ? eye / (w * 0.5f / std::tan(h0)) : 1.0f;
+        return z * eyeZoom;
+    }
+    float g_mainMatrix[16];
+    bool g_mainWrote = false; // (the middle pass's zoom left at race+0xe36c: not the scene's own matrix)
+    void startPass(uint8_t *rdram, R5900Context *ctx, int side)
+    {
+        for (int k = 0; k < 8; ++k)
+            ctx->r[4 + k] = g_args[k];
+        static const bool keepDt = std::getenv("GT4_TRIPLE_DT") != nullptr; // (test: the frame's own time step)
+        ctx->f[12] = keepDt ? g_dt : 0.0f; // (the side passes advance nothing that is timed)
+        float m[16];
+        const Camera cam = cameraNow(g_view.load(std::memory_order_relaxed));
+        sideMatrix(side, angleNow() + cam.trim, cam.bezels ? gt4screens::config().gap : 0.0f, m, zoomFor(cam.fov),
+                   (side < 0 ? cam.upLeft : cam.upRight) / 100.0f, (side < 0 ? cam.zoomLeft : cam.zoomRight) / 100.0f,
+                   (side < 0 ? cam.tiltLeft : cam.tiltRight) / 100.0f);
+        // The side views turned about a point `pivot` along eye-space z instead of its origin (m' = T(-p) m T(p), p = (0, 0,
+        // pivot)). GT4's chase views (close, chase, far) draw as if the eye were 2 m ahead of their eye space's origin: turned
+        // about the origin, what is near lay lower and bigger on the side screens (developer 2026-10-31, "all the views are broken
+        // now"). Measured on the start grid, the race standing still (runs x*, zf*: chase and far chase join best at -2,
+        // -1.5 and -3 worse; the cockpit views at 0). The close chase (gt4cam: 0.7 times as far, 4 degrees down) only in the
+        // race (vc*: -2 too far, -1 short): -1.2 [I]. GT4_TRIPLE_PIVOT=<depth> (test) overrides it for every view.
+        static const char *pivotEnv = std::getenv("GT4_TRIPLE_PIVOT");
+        const int view = g_view.load(std::memory_order_relaxed);
+        // (Build 68: no pivot by default; the chase views' field of view was the cause, see halfTan.)
+        (void)view;
+        const float pivot = pivotEnv ? static_cast<float>(std::atof(pivotEnv)) : 0.0f;
+        if (pivot != 0.0f)
+            for (int c = 0; c < 3; ++c)
+                m[12 + c] = -pivot * m[8 + c] + (c == 2 ? pivot : 0.0f);
+        // GT4_TRIPLE_PITCH=<degrees> (test): the side matrix taken into a frame pitched by that much, m' = Q^T m Q (Q about x)
+        static const float pitch = [] {
+            const char *v = std::getenv("GT4_TRIPLE_PITCH");
+            return v ? static_cast<float>(std::atof(v)) * 3.14159265f / 180.0f : 0.0f;
+        }();
+        if (pitch != 0.0f)
+        {
+            const float pc = std::cos(pitch), ps = std::sin(pitch);
+            const float q[16] = {1, 0, 0, 0, 0, pc, ps, 0, 0, -ps, pc, 0, 0, 0, 0, 1};
+            const float qt[16] = {1, 0, 0, 0, 0, pc, -ps, 0, 0, ps, pc, 0, 0, 0, 0, 1};
+            auto mul = [](const float *a, const float *b, float *o) {
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        o[r * 4 + c] = a[r * 4] * b[c] + a[r * 4 + 1] * b[4 + c] + a[r * 4 + 2] * b[8 + c] + a[r * 4 + 3] * b[12 + c];
+            };
+            float t1[16], t2[16];
+            mul(qt, m, t1);
+            mul(t1, q, t2);
+            std::memcpy(m, t2, sizeof(m));
+        }
+        static const bool same = std::getenv("GT4_TRIPLE_SAME") != nullptr; // (test: the sides drawn with the middle's camera)
+        if (same)
+            std::memcpy(m, g_e36c, sizeof(m));
+        std::memcpy(rdram + g_race + 0xe36cu, m, sizeof(m));
+        g_side = side;
+        static const bool tlog = std::getenv("GT4_TRIPLE_LOG") != nullptr;
+        if (tlog)
+            gt4hudpic::marker(rdram, side < 0 ? 0x7a0000f1u : 0x7a0000f2u); // (GT4_TRIPLE_LOG: the pass begins)
+        ctx->r[31] = _mm_set_epi64x(0, kSideRet);
+        ctx->pc = kScene;
+    }
+    // The middle pass's matrix: the scene's own, zoomed by the camera's field of view (x and y alike, so GT4's own view
+    // narrower or wider at full resolution); left at race+0xe36c and taken back at the next race frame (g_mainWrote).
+    void setMainMatrix(uint8_t *rdram)
+    {
+        const float z = zoomFor(cameraNow(g_view.load(std::memory_order_relaxed)).fov);
+        if (z == 1.0f)
+        {
+            std::memcpy(rdram + g_race + 0xe36cu, g_e36c, sizeof(g_e36c));
+            return;
+        }
+        float b[16], m[16];
+        std::memcpy(b, g_e36c, sizeof(b));
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                m[r * 4 + c] = b[r * 4 + c] * (c < 2 ? z : 1.0f);
+        std::memcpy(rdram + g_race + 0xe36cu, m, sizeof(m));
+        std::memcpy(g_mainMatrix, m, sizeof(m));
+        g_mainWrote = true;
+    }    void sceneHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0));
+        if ((g_step == Step::Left || g_step == Step::Right) && ra == kSideRet)
+        {
+            g_scene(rdram, ctx, runtime);
+            return;
+        }
+        if (g_step == Step::Main)
+        {
+            g_step = Step::Idle;
+            g_side = 0;
+            g_scene(rdram, ctx, runtime);
+            return;
+        }
+        const uint32_t race = GPR_U32(ctx, 4) & 0x1fffffffu, fb = GPR_U32(ctx, 5) & 0x1fffffffu;
+        if (g_step == Step::Idle && ra == kSceneRet && race > 0x100000u && race + 0xe36cu + 64u < 0x02000000u && fb + 4u < 0x02000000u)
+        {
+            g_race = race;
+            for (int k = 0; k < 8; ++k)
+                g_args[k] = ctx->r[4 + k];
+            g_ra = ctx->r[31];
+            g_dt = ctx->f[12];
+            // (the matrix there, unless it is the middle pass's zoom this hook left last frame)
+            if (!(g_mainWrote && std::memcmp(rdram + race + 0xe36cu, g_mainMatrix, sizeof(g_mainMatrix)) == 0))
+                std::memcpy(g_e36c, rdram + race + 0xe36cu, sizeof(g_e36c));
+            g_mainWrote = false;
+            uint32_t fbw = 0;
+            std::memcpy(&fbw, rdram + fb, 4);
+            g_fbp = (fbw >> 11) & 0x1ffu; // (the descriptor's +0 is the frame buffer's address in GS words: 0x69000 is FBP 0x0d2)
+            if (g_frames++ == 0u)
+                std::fprintf(stderr, "[gt4-triple] side views drawn with each race frame (race %08x, frame buffer word %08x)\n", race, fbw);
+            // GT4_TRIPLE_DUMP (diagnostics): the camera manager's monitor matrix (race+0x80, +0x9c0: 16 floats, then zoom, near,
+            // far, 1/tan) every 120 race frames, with the view in use.
+            static const bool dump = std::getenv("GT4_TRIPLE_DUMP") != nullptr;
+            if (dump && g_frames % 120u == 1u)
+            {
+                const uint32_t cm = (race + 0x80u) + 0x9c0u;
+                float m[20];
+                std::memcpy(m, rdram + cm, sizeof(m));
+                std::fprintf(stderr, "[gt4-triple] view %d GT4's own eye matrix (race+0xe36c): %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                             g_view.load(), reinterpret_cast<const float *>(g_e36c)[0], reinterpret_cast<const float *>(g_e36c)[1],
+                             reinterpret_cast<const float *>(g_e36c)[2], reinterpret_cast<const float *>(g_e36c)[3],
+                             reinterpret_cast<const float *>(g_e36c)[4], reinterpret_cast<const float *>(g_e36c)[5],
+                             reinterpret_cast<const float *>(g_e36c)[6], reinterpret_cast<const float *>(g_e36c)[7],
+                             reinterpret_cast<const float *>(g_e36c)[8], reinterpret_cast<const float *>(g_e36c)[9],
+                             reinterpret_cast<const float *>(g_e36c)[10], reinterpret_cast<const float *>(g_e36c)[11],
+                             reinterpret_cast<const float *>(g_e36c)[12], reinterpret_cast<const float *>(g_e36c)[13],
+                             reinterpret_cast<const float *>(g_e36c)[14], reinterpret_cast<const float *>(g_e36c)[15]);
+                std::fprintf(stderr, "[gt4-triple] view %d monitor matrix:%.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f; zoom %.4f near %.4f far %.4f k %.4f\n",
+                             g_view.load(), m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15], m[16], m[17],
+                             m[18], m[19]);
+                // (the last pass's projection, scratchpad slot 1 at 0x70002000 + 0xf10: the middle view's, as GT4 built it for this camera)
+                if (const uint8_t *spr = runtime->memory().getScratchpad())
+                {
+                    float pr[16];
+                    std::memcpy(pr, spr + 0x2f10u, sizeof(pr)); // (0x70002000 + 0xf10)
+                    // (the view matrix, slot 0 at 0xed0: its scale on each eye axis, the length of each column of its 3 x 3)
+                    float vw[16];
+                    std::memcpy(vw, spr + 0x2ed0u, sizeof(vw));
+                    auto col = [&](int c) { return std::sqrt(vw[c] * vw[c] + vw[4 + c] * vw[4 + c] + vw[8 + c] * vw[8 + c]); };
+                    std::fprintf(stderr, "[gt4-triple] view %d view matrix scale: x %.4f y %.4f z %.4f; row 3 %.2f %.2f %.2f %.2f\n", g_view.load(), col(0), col(1), col(2),
+                                 vw[12], vw[13], vw[14], vw[15]);
+                    std::fprintf(stderr, "[gt4-triple] view %d projection: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n", g_view.load(),
+                                 pr[0], pr[1], pr[2], pr[3], pr[4], pr[5], pr[6], pr[7], pr[8], pr[9], pr[10], pr[11], pr[12], pr[13], pr[14], pr[15]);
+                }
+            }
+            g_step = Step::Start;
+            ctx->pc = kSideRet;
+            return;
+        }
+        g_scene(rdram, ctx, runtime);
+    }
+    // (Test, GT4_TRIPLE_TILT=1.) The scene multiplies race+0xe36c into the matrix in VU0 vf28-vf31 (0x4a7698 from 0x33ebb8:
+    // C' = A C, A first); this takes A into C's rotation, R A R^T. Measured 2026-10-31: C there is GT4's projection alone
+    // (1.299, 2.2543, -1.0001; the world -> view matrix is loaded after it), R the identity: the chase views' seams were the
+    // pivot (startPass), not a tilt.
+    bool g_tiltLogged = false;
+    PS2Runtime *g_runtime = nullptr; // (set by install)
+    void tiltSide(uint8_t *rdram, R5900Context *ctx)
+    {
+        static const bool off = [] {
+            const char *v = std::getenv("GT4_TRIPLE_TILT");
+            return v && *v == '0';
+        }();
+        if (off || g_race == 0u)
+            return;
+        float c[4][4];
+        for (int r = 0; r < 4; ++r)
+            std::memcpy(c[r], &ctx->vu0_vf[28 + r], sizeof(c[r]));
+        auto col = [&](int j, float v[3]) {
+            v[0] = c[0][j], v[1] = c[1][j], v[2] = c[2][j];
+        };
+        auto dot = [](const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        auto unit = [&](float *a) {
+            const float n = std::sqrt(dot(a, a));
+            if (n < 1e-6f)
+                return false;
+            a[0] /= n, a[1] /= n, a[2] /= n;
+            return true;
+        };
+        // the depth direction: the perspective column (w), else z's
+        float r2[3], r0[3], r1[3];
+        col(3, r2);
+        if (!unit(r2))
+        {
+            col(2, r2);
+            if (!unit(r2))
+                return;
+        }
+        col(0, r0);
+        col(1, r1);
+        for (float *a : {r0, r1})
+        {
+            const float d = dot(a, r2);
+            a[0] -= d * r2[0], a[1] -= d * r2[1], a[2] -= d * r2[2];
+        }
+        if (!unit(r0))
+            return;
+        const float d01 = dot(r1, r0);
+        r1[0] -= d01 * r0[0], r1[1] -= d01 * r0[1], r1[2] -= d01 * r0[2];
+        if (!unit(r1))
+            return;
+        // (right-handed, and as close to no turn as the camera allows: a projection's own signs are not a rotation)
+        const float r2x[3] = {r0[1] * r1[2] - r0[2] * r1[1], r0[2] * r1[0] - r0[0] * r1[2], r0[0] * r1[1] - r0[1] * r1[0]};
+        float R[3][3] = {{r0[0], r1[0], r2x[0]}, {r0[1], r1[1], r2x[1]}, {r0[2], r1[2], r2x[2]}};
+        if (R[0][0] < 0.0f)
+            for (int i = 0; i < 3; ++i)
+                R[i][0] = -R[i][0], R[i][2] = -R[i][2];
+        if (R[1][1] < 0.0f)
+            for (int i = 0; i < 3; ++i)
+                R[i][1] = -R[i][1], R[i][2] = -R[i][2];
+        float a[16], o[16] = {};
+        std::memcpy(a, rdram + g_race + 0xe36cu, sizeof(a));
+        // o = R4 a R4^T, R4 = R with 1 in the corner
+        float t[16] = {};
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+            {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float rik = i < 3 && k < 3 ? R[i][k] : (i == k ? 1.0f : 0.0f);
+                    s += rik * a[k * 4 + j];
+                }
+                t[i * 4 + j] = s;
+            }
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+            {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float rjk = j < 3 && k < 3 ? R[j][k] : (j == k ? 1.0f : 0.0f); // (R^T[k][j] = R[j][k])
+                    s += t[i * 4 + k] * rjk;
+                }
+                o[i * 4 + j] = s;
+            }
+        std::memcpy(rdram + g_race + 0xe36cu, o, sizeof(o));
+        static const bool dump = std::getenv("GT4_TRIPLE_DUMP") != nullptr;
+        if (dump && (g_frames % 120u == 1u || !g_tiltLogged))
+        {
+            g_tiltLogged = true;
+            std::fprintf(stderr, "[gt4-triple] view %d side %d camera matrix C: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                         g_view.load(), g_side, c[0][0], c[0][1], c[0][2], c[0][3], c[1][0], c[1][1], c[1][2], c[1][3], c[2][0], c[2][1], c[2][2], c[2][3],
+                         c[3][0], c[3][1], c[3][2], c[3][3]);
+            if (const uint32_t cam = g_cam.load(std::memory_order_relaxed); cam && cam + 0x140u < 0x02000000u)
+            {
+                float v[16];
+                std::memcpy(v, rdram + cam + 0x100u, sizeof(v));
+                std::fprintf(stderr, "[gt4-triple] view %d camera +0x100: %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f | %.2f %.2f %.2f; up . world y %.4f, forward y %.4f (pitch %.1f deg)\n",
+                             g_view.load(), v[0], v[1], v[2], v[4], v[5], v[6], v[8], v[9], v[10], v[12], v[13], v[14], v[5],
+                             v[6], std::asin(std::clamp(v[6], -1.0f, 1.0f)) * 57.2958f);
+            }
+            if (const uint8_t *spr = g_runtime ? g_runtime->memory().getScratchpad() : nullptr)
+            {
+                float vw[16];
+                std::memcpy(vw, spr + 0x2ed0u, sizeof(vw));
+                std::fprintf(stderr, "[gt4-triple] view %d side %d view slot: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.2f %.2f %.2f %.2f\n",
+                             g_view.load(), g_side, vw[0], vw[1], vw[2], vw[3], vw[4], vw[5], vw[6], vw[7], vw[8], vw[9], vw[10], vw[11], vw[12], vw[13], vw[14], vw[15]);
+            }
+            std::fprintf(stderr, "[gt4-triple] view %d side %d camera turn: %.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f (tilt %.1f deg)\n", g_view.load(), g_side,
+                         R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2],
+                         std::asin(std::clamp(R[1][2], -1.0f, 1.0f)) * 57.2958f);
+        }
+    }
+    void sideReturnHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        // GT4_TRIPLE_ALTERNATE=1 (test): one side per race frame, in turn (each side 30 times a second).
+        static const bool alternate = std::getenv("GT4_TRIPLE_ALTERNATE") != nullptr;
+        if (g_step == Step::Start)
+        {
+            if (alternate && (g_frames & 1u))
+            {
+                g_step = Step::Right;
+                g_skipRight = false;
+                startPass(rdram, ctx, 1);
+                return;
+            }
+            g_skipRight = alternate;
+            g_step = Step::Left;
+            startPass(rdram, ctx, -1);
+            return;
+        }
+        // After a side's scene, GT4's post passes over the 3D buffer (0x33f2e8, the race frame's call after its scene with
+        // the same arguments: its colour and light passes, which the middle view gets too), then the side's marker.
+        static const bool noPost = std::getenv("GT4_TRIPLE_POST") == nullptr; // (test: GT4_TRIPLE_POST=1 runs them; 42 fps, no change in brightness)
+        auto post = [&](Step next) {
+            for (int k = 0; k < 8; ++k)
+                ctx->r[4 + k] = g_args[k];
+            ctx->f[12] = 0.0f;
+            ctx->r[31] = _mm_set_epi64x(0, kSideRet);
+            ctx->pc = kPost;
+            g_step = next;
+        };
+        if (g_step == Step::Left && !noPost)
+        {
+            post(Step::LeftPost);
+            return;
+        }
+        if (g_step == Step::Left || g_step == Step::LeftPost)
+        {
+            gt4hudpic::marker(rdram, 0x7a000001u | (g_fbp << 8)); // the left side's picture is in the 3D buffer
+            if (g_skipRight)
+                g_step = Step::RightPost; // (GT4_TRIPLE_ALTERNATE: on to the middle pass)
+            else
+            {
+                g_step = Step::Right;
+                startPass(rdram, ctx, 1);
+                return;
+            }
+        }
+        if (g_step == Step::RightPost && g_skipRight)
+        {
+            g_skipRight = false;
+            setMainMatrix(rdram);
+            for (int k = 0; k < 8; ++k)
+                ctx->r[4 + k] = g_args[k];
+            ctx->f[12] = g_dt;
+            ctx->r[31] = g_ra;
+            g_side = 0;
+            g_step = Step::Main;
+            ctx->pc = kScene;
+            return;
+        }
+        if (g_step == Step::Right && !noPost)
+        {
+            post(Step::RightPost);
+            return;
+        }
+        if (g_step == Step::Right || g_step == Step::RightPost)
+        {
+            gt4hudpic::marker(rdram, 0x7a000002u | (g_fbp << 8));
+            setMainMatrix(rdram);
+            for (int k = 0; k < 8; ++k)
+                ctx->r[4 + k] = g_args[k];
+            ctx->f[12] = g_dt;
+            ctx->r[31] = g_ra;
+            g_side = 0;
+            if (std::getenv("GT4_TRIPLE_LOG"))
+                gt4hudpic::marker(rdram, 0x7a0000f3u); // (GT4_TRIPLE_LOG: the middle pass begins)
+            g_step = Step::Main;
+            ctx->pc = kScene;
+            return;
+        }
+        // Photo mode's own return from its scene call.
+        ctx->pc = kSideRet;
+        g_photoRest(rdram, ctx, runtime);
+    }
+    // Once, at the first race-frame scene call (CORE checked).
+    void install(PS2Runtime *runtime, const uint8_t *rdram)
+    {
+        static bool done = false;
+        if (done)
+            return;
+        done = true;
+        auto u32 = [rdram](uint32_t a) {
+            uint32_t v = 0;
+            std::memcpy(&v, rdram + a, 4);
+            return v;
+        };
+        if (!(u32(0x33e090u) == 0x0c0cfaaeu && u32(0x33e4a8u) == 0x0c0cfaaeu && u32(0x33eab8u) == 0x27bdffa0u))
+        {
+            std::fprintf(stderr, "[gt4-triple] CORE does not match (0x33e090 %08x, 0x33e4a8 %08x, 0x33eab8 %08x): no side views\n", u32(0x33e090u),
+                         u32(0x33e4a8u), u32(0x33eab8u));
+            return;
+        }
+        g_runtime = runtime;
+        g_scene = runtime->lookupFunction(kScene);
+        g_photoRest = runtime->lookupFunction(kSideRet);
+        if (!g_scene || !g_photoRest)
+        {
+            std::fprintf(stderr, "[gt4-triple] the scene's functions not found: no side views\n");
+            return;
+        }
+        runtime->registerFunction(kScene, &sceneHook);
+        runtime->registerFunction(kSideRet, &sideReturnHook);
+        std::fprintf(stderr, "[gt4-triple] angled side screens: %.1f degrees, gap %.3f screen widths; the scene is drawn three times per race frame\n",
+                     config().angle, gt4screens::config().gap);
+    }
+}
 #endif
 
 #if defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
@@ -1219,8 +1897,8 @@ namespace gt4screens
 //                             view (bumper, bonnet, roof) not locked keeps the horizon level (no roll; the chase view's
 //                             pitch); a chase view (close, chase, far) locked stays straight behind the car and tilts with
 //                             it. Default and absent: GT4's own (bumper, bonnet, roof).
-// The roof view is the bonnet view's eye 0.75 m higher and 1.50 m further back, 7 degrees further down (above the car's
-// roof, its roof at the bottom of the picture; 0.40 / 0.80 / 3 until 2026-10-20 looked like the bonnet view); the close chase
+// The roof view (since 2026-10-30 a cowl view) is the bonnet view's eye 0.15 m further back and 8 degrees further down (at
+// the base of the windscreen, the whole bonnet in the picture; 0.75 / 1.50 / 7 over the roof until then); the close chase
 // is the chase view 0.7 times as far, 0.35 m higher and 4 degrees down (the GT3 launcher's close chase). The view
 // button moves GT4's own view (its step byte given as the step from one of GT4's three views to the next one's), so
 // GT4 itself switches between bumper, chase and bonnet; a step between two views on the same GT4 view is given as 0.
@@ -1248,14 +1926,63 @@ namespace gt4cam
     constexpr float kCloseScale = 0.7f, kCloseRaise = 0.35f, kCloseDown = 4.0f;  // close chase
     // Roof (from the bonnet view). Was 0.40 m up, 0.80 m back, 3 degrees down: on GT4's bonnet view (its eye already
     // about the roof's height) that looked the same as the bonnet view (developer 2026-10-20: "double ups of cameras").
+    // Then 0.75 m up, 1.50 m back, 7 degrees down (over the roof) until developer 2026-10-30: "shift my roof camera to like the
+    // base of the windscreen ... so you can see the whole bonnet". Now 0 up, 0.15 m back, 8 degrees down: GT4's bonnet eye
+    // is already near the windscreen's base (Ford Ka: 0.20 m back and 0.10 m down showed the aerial's base; 0.35 m back
+    // or more, the inside of the body), so the move is mostly the tilt (analysis/design/cameras/ROOF-REPORT.md).
     // GT4_CAM_ROOF=<up>,<back>,<down> (tests only) tries others.
-    const std::array<float, 3> kRoof = [] {
-        std::array<float, 3> r{0.75f, 1.50f, 7.0f};
-        if (const char *v = std::getenv("GT4_CAM_ROOF"); v && *v)
-            if (std::sscanf(v, "%f,%f,%f", &r[0], &r[1], &r[2]) != 3)
-                r = {0.75f, 1.50f, 7.0f};
+    // Build 69 (developer 2026-10-31, "i want it like forza motorsports 4 bonnet view ... can we tune it ourselves?"): the moved
+    // eye is the Bonnet view (2nd); its offset is GT4_CAM_BONNET=<up m>,<back m>,<down degrees> (Display > Cameras' bonnet
+    // camera sliders), taken in live from camera-live.txt next to GT4.exe while GT4 runs (pollBonnetLive). Kept within
+    // kBonnetMin / kBonnetMax so it stays about the bonnet. GT4_CAM_ROOF (tests) still overrides at start-up.
+    constexpr std::array<float, 3> kBonnetDefault{-0.08f, 0.0f, 7.0f};
+    // (Build 70, developer 2026-10-31 "at least double": up/down 0.80 down to 0.40 up, forward/back 1.20 forward to 0.80 back)
+    constexpr std::array<float, 3> kBonnetMin{-0.80f, -1.20f, -5.0f}, kBonnetMax{0.40f, 0.80f, 20.0f};
+    std::array<float, 3> clampBonnet(std::array<float, 3> r)
+    {
+        for (int i = 0; i < 3; ++i)
+            r[i] = std::clamp(r[i], kBonnetMin[i], kBonnetMax[i]);
         return r;
+    }
+    std::array<std::atomic<float>, 3> bonnetLive = [] {
+        std::array<float, 3> r = kBonnetDefault;
+        for (const char *key : {"GT4_CAM_BONNET", "GT4_CAM_ROOF"})
+            if (const char *v = std::getenv(key); v && *v)
+            {
+                std::array<float, 3> t{};
+                if (std::sscanf(v, "%f,%f,%f", &t[0], &t[1], &t[2]) == 3)
+                    r = clampBonnet(t);
+            }
+        return std::array<std::atomic<float>, 3>{r[0], r[1], r[2]};
     }();
+    // Presenter thread, every 10th frame: camera-live.txt's GT4_CAM_BONNET= line, when the file changed.
+    void pollBonnetLive(const std::string &file)
+    {
+        static uint64_t frames = 0;
+        static std::filesystem::file_time_type last{};
+        if (frames++ % 10u != 0u)
+            return;
+        std::error_code ec;
+        const auto when = std::filesystem::last_write_time(file, ec);
+        if (ec || when == last)
+            return;
+        last = when;
+        if (FILE *f = std::fopen(file.c_str(), "r"))
+        {
+            char line[256];
+            while (std::fgets(line, sizeof(line), f))
+            {
+                std::array<float, 3> t{};
+                if (std::sscanf(line, "GT4_CAM_BONNET=%f,%f,%f", &t[0], &t[1], &t[2]) == 3)
+                {
+                    t = clampBonnet(t);
+                    for (int i = 0; i < 3; ++i)
+                        bonnetLive[i].store(t[i], std::memory_order_relaxed);
+                }
+            }
+            std::fclose(f);
+        }
+    }
     bool farOn = false, lookOn = false;
     std::vector<int> cycle;       // the view button's views in order (empty: GT4's own cycle, untouched)
     unsigned lockBits = kGt4Lock; // the views locked to the car's tilt
@@ -1712,6 +2439,16 @@ namespace gt4cam
     void updateHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t cam = GPR_U32(ctx, 4) & 0x01ffffffu;
+#if !defined(GT4_STOCK_BUILD)
+        static const bool tdump = std::getenv("GT4_TRIPLE_DUMP") != nullptr; // (angled triples: when GT4 moves the camera)
+        static int tsaid = 0;
+        if (tdump && tsaid < 400 && gt4triple::g_frames > 600u)
+        {
+            ++tsaid;
+            std::fprintf(stderr, "[gt4-triple] camera update: frame %llu side %d ra %08x f12 %.4f cam %08x\n",
+                         static_cast<unsigned long long>(gt4triple::g_frames), gt4triple::g_side, GPR_U32(ctx, 31), ctx->f[12], cam);
+        }
+#endif
         update(rdram, ctx, runtime);
         // GT4's rear-view mirror in every view of the player's camera (GT4_MIRROR=both / page, gt4_mirror.h; the test switch
         // GT4_MIRROR_ALL=1, HUD hand-off 6 B1). GT4's input method sets the mirror's byte +0x26d only in the bumper view; set
@@ -1751,6 +2488,8 @@ namespace gt4cam
             c.view = v;
 #if !defined(GT4_STOCK_BUILD)
         gt4hudpic::noteView(c.view); // (the launcher's race pictures: the view they were taken in)
+        gt4triple::noteView(c.view); // (angled triple screens: the camera's own preset)
+        gt4triple::noteCam(cam);     // (and its world -> view matrix: the side views turn about the world's up)
 #endif
         float m[16];
         for (int i = 0; i < 16; ++i)
@@ -1794,9 +2533,13 @@ namespace gt4cam
                 changed = true;
             }
         }
-        if (v == Roof && view == 6u)
+        // (Build 69, developer 2026-10-31: "GT4's bonnet camera is more of a roof camera ... change that to be called roof
+        // camera ... our roof camera ... called Bonnet camera, and put that 2nd ... sit on the bonnet infront of the
+        // windscreen". The slots keep their keys and order: Bonnet (2nd) is now the moved eye, Roof (3rd) GT4's own.)
+        if (v == Bonnet && view == 6u)
         {
-            moveEye(m, kRoof[0], kRoof[1], kRoof[2]);
+            moveEye(m, bonnetLive[0].load(std::memory_order_relaxed), bonnetLive[1].load(std::memory_order_relaxed),
+                    bonnetLive[2].load(std::memory_order_relaxed));
             changed = true;
         }
         if (lookOn)
@@ -3102,12 +3845,34 @@ bool PS2Runtime::syncCoreSubsystems()
             };
         }
 #endif
+        // GT4_VU1_TIME=1 (diagnostics, 2026-10-31 triple screens' 60 fps): the VU1 programs' share of their thread, every 10 s.
+        static const bool vu1Time = std::getenv("GT4_VU1_TIME") != nullptr;
+        const auto t0 = vu1Time ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         if (resume)
             m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE, m_gs, &m_memory,
                          top, itop, 65536);
         else
             m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE, m_gs, &m_memory,
                           startPC, top, itop, 65536);
+        if (vu1Time)
+        {
+            static double busy = 0.0;
+            static uint64_t runs = 0;
+            static auto since = std::chrono::steady_clock::now();
+            const auto t1 = std::chrono::steady_clock::now();
+            busy += std::chrono::duration<double>(t1 - t0).count();
+            ++runs;
+            const double span = std::chrono::duration<double>(t1 - since).count();
+            if (span >= 10.0)
+            {
+                std::fprintf(stderr, "[vu1-time] %.0f s: %llu programs, %.1f%% of the time in them (%.1f us each), %llu per second\n", span,
+                             static_cast<unsigned long long>(runs), 100.0 * busy / span, 1e6 * busy / std::max<uint64_t>(runs, 1),
+                             static_cast<unsigned long long>(runs / span));
+                busy = 0.0;
+                runs = 0;
+                since = t1;
+            }
+        }
         if (trackMotion)
             m_vu1.packetSink = nullptr;
 #if defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
@@ -3162,6 +3927,17 @@ bool PS2Runtime::syncCoreSubsystems()
                 return (context ? context : &m_cpuContext)->vu0_fbrst;
             });
         std::cerr << "[vif1] VIF1/VU1 worker thread running (GT3_VIF1_THREAD=0 runs them on the EE thread)" << std::endl;
+        // GT3_VIF1_EARLY_NUDGE=1 (off by default until its race and picture checks): the EE is told of a stalling
+        // I-bit at once, not only by the worker's wake after its run.
+        if (std::getenv("GT3_VIF1_EARLY_NUDGE") && std::strcmp(std::getenv("GT3_VIF1_EARLY_NUDGE"), "1") == 0)
+            m_memory.setVif1StallNudge(
+                [](void *user)
+                {
+                    auto *self = static_cast<PS2Runtime *>(user);
+                    if (self->m_eeScheduler)
+                        self->m_eeScheduler->nudgeCheckpoint();
+                },
+                this);
     }
     resetIop();
     m_vu0.reset();
@@ -3393,6 +4169,13 @@ bool PS2Runtime::initialize(const char *title)
                 SetWindowPosition(x, y);
                 SetWindowSize(w, h);
                 screensWindow = true;
+                {
+                    // (F11 / Alt+Enter / Esc: this window and a window on the middle monitor, in turn)
+                    gt4screens::Window &win = gt4screens::window();
+                    const int mid = chosenMonitor >= 0 ? chosenMonitor : GetCurrentMonitor();
+                    const Vector2 mp = GetMonitorPosition(mid);
+                    win = gt4screens::Window{true, true, x, y, w, h, static_cast<int>(mp.x), static_cast<int>(mp.y), GetMonitorWidth(mid), GetMonitorHeight(mid)};
+                }
                 std::cerr << "[window] GT4_SCREENS=3: " << found << " of 3 monitors (" << what << "): one window " << w << "x" << h << " at " << x << "," << y
                           << (found < 3 ? " (the picture is still cut for three screens)" : "") << std::endl;
             }
@@ -4346,6 +5129,54 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     // (HUD hand-off 7 C: a suspended bracketed call returning through a dispatched jump: its bracket closed now)
     if (!isCall && gt4hudpic::pendingReturns())
         gt4hudpic::atDispatch(rdram, targetPc, GPR_U32(ctx, 29));
+    // Angled triple screens (gt4triple): set up at the first race-frame scene call. During a side pass the rear-view mirror
+    // (0x341e50, its fading pass's fill 0x341d88) and the scene's 2D overlay (0x3c2838) are left out: the middle screen has them.
+    if (isCall && targetPc == 0x33eab8u && sourcePc == 0x33e090u && gt4triple::config().angled)
+        gt4triple::install(this, rdram);
+    // (GT4_TRIPLE_SKIP=<hex>,<hex>...: tests, more of GT4's calls left out of the side passes, to time them)
+    static const std::vector<uint32_t> tripleSkip = [] {
+        std::vector<uint32_t> v;
+        if (const char *s = std::getenv("GT4_TRIPLE_SKIP"); s && *s)
+            for (const char *q = s; *q;)
+            {
+                char *e = nullptr;
+                const unsigned long a = std::strtoul(q, &e, 16);
+                if (e == q)
+                    break;
+                v.push_back(static_cast<uint32_t>(a));
+                q = *e == ',' ? e + 1 : e;
+            }
+        return v;
+    }();
+    // (a side pass's eye matrix taken into the camera's own frame as the scene multiplies it in: gt4triple::tiltSide)
+    // (GT4_TRIPLE_TILT=1, test: a side pass's eye matrix taken into the frame of GT4's matrix at that call, gt4triple::tiltSide;
+    // that matrix is the projection alone, so it changes nothing)
+    static const bool tripleTilt = [] {
+        const char *v = std::getenv("GT4_TRIPLE_TILT");
+        return v && *v == '1';
+    }();
+    if (tripleTilt && isCall && gt4triple::g_side != 0 && targetPc == 0x4a7698u && sourcePc == 0x33ebb8u)
+        gt4triple::tiltSide(rdram, ctx);
+    // (GT4_TRIPLE_DUMP: GT4's camera matrix in VU0 at the scene's calls after the eye matrix, in the middle pass)
+    if (isCall && gt4triple::g_side == 0 && gt4triple::g_frames % 120u == 2u && sourcePc >= 0x33ebb8u && sourcePc <= 0x33ed80u)
+    {
+        static const bool dump = std::getenv("GT4_TRIPLE_DUMP") != nullptr;
+        if (dump)
+        {
+            float c[4][4];
+            for (int r = 0; r < 4; ++r)
+                std::memcpy(c[r], &ctx->vu0_vf[28 + r], sizeof(c[r]));
+            std::fprintf(stderr, "[gt4-triple] view %d at %08x -> %08x VU0 vf28-31: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                         gt4triple::g_view.load(), sourcePc, targetPc, c[0][0], c[0][1], c[0][2], c[0][3], c[1][0], c[1][1], c[1][2], c[1][3], c[2][0], c[2][1],
+                         c[2][2], c[2][3], c[3][0], c[3][1], c[3][2], c[3][3]);
+        }
+    }
+    if (isCall && gt4triple::g_side != 0 && (targetPc == 0x341e50u || targetPc == 0x341d88u || targetPc == 0x3c2838u ||
+                                             std::find(tripleSkip.begin(), tripleSkip.end(), targetPc) != tripleSkip.end()))
+    {
+        ctx->pc = fallthroughPc;
+        return true;
+    }
 #endif
     // GT3_CALL_TRACE=<hex address>: counts the call sites of that function and
     // logs them (with the caller's a0 and the returned vsync tick) every 5 s.
@@ -4398,6 +5229,13 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         else
             gt4start::afterHoldLoop(rdram);
     }
+    // Arcade's courses (gt4_tracks.h): the pack's added course offered, the launcher's hidden ones left out; installed at
+    // GT4's first isCourseAvailable script call (0x166670, before it asks 0x42eae8).
+    if (isCall && targetPc == 0x166670u)
+        gt4tracks::install(rdram, this);
+    // ... and courses bigger than the PS2's 12 MB: the course file read (0x394fe4 -> 0x3978f8) goes above 32 MB.
+    if (isCall && targetPc == 0x3978f8u && sourcePc == 0x394fe4u)
+        gt4tracks::courseRead(rdram, ctx);
     // The race reader (gt4_race_reader.h; HUD and telemetry): every race frame's state copied out, read-only.
     if (isCall && targetPc == 0x389638u)
     {
@@ -4670,7 +5508,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                    targetPc == 0x393790u || targetPc == 0x44e390u || targetPc == 0x497af0u || sourcePc == 0x33f0a4u ||
                    sourcePc == 0x33f080u || targetPc == 0x3c3820u || targetPc == 0x105338u || targetPc == 0x1d6378u ||
                    targetPc == 0x1052e0u || targetPc == 0x105528u || sourcePc == 0x109f44u || targetPc == 0x4a7c60u ||
-                   targetPc == 0x1059f8u))
+                   targetPc == 0x1059f8u || targetPc == 0x33eab8u))
     {
         auto u32 = [rdram](uint32_t a) {
             uint32_t v = 0;
@@ -4694,6 +5532,9 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 #if !defined(GT4_STOCK_BUILD)
             // Three screens (gt4screens): GT4's 16:9 with the race view as wide as the three screens (the 48:9 path with the
             // screens' own shape), whatever GT4_ASPECT says.
+            // Angled side screens (gt4triple): the middle screen is GT4's own 16:9 view; the sides are views of their own.
+            if (gt4triple::config().angled)
+                return 169;
             if (gt4screens::config().on)
             {
                 if (!m.empty() && m != "16:9" && m != "48:9")
@@ -5211,6 +6052,18 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                 const float half = gt4wide::canvasHalf(true);
                 ctx->f[12] = 320.0f - half;
                 ctx->f[13] = 320.0f + half;
+            }
+        }
+        // GT4_TRIPLE_TEST (gt4triple): the race frame's scene (0x33e090 -> 0x33eab8, a0 the race) drawn as a side screen's view.
+        if (targetPc == 0x33eab8u && sourcePc == 0x33e090u && gt4triple::config().test != 0)
+        {
+            static const bool guards = u32(0x33e090u) == 0x0c0cfaaeu && u32(0x33e4a8u) == 0x0c0cfaaeu;
+            const uint32_t race = GPR_U32(ctx, 4) & 0x1fffffffu;
+            if (guards && race + 0xe36cu + 64u < 0x02000000u)
+            {
+                float m[16];
+                gt4triple::sideMatrix(gt4triple::config().test, gt4triple::config().angle, gt4screens::config().gap, m);
+                std::memcpy(rdram + race + 0xe36cu, m, sizeof(m));
             }
         }
 #else
@@ -7122,7 +7975,7 @@ void PS2Runtime::run()
     initializeEeKernelState(m_memory.getRDRAM());
     m_cpuContext.r[4] = _mm_setzero_si128();
     m_cpuContext.r[5] = _mm_setzero_si128();
-    m_cpuContext.r[29] = _mm_set_epi64x(0, static_cast<int64_t>(PS2_RAM_SIZE - 0x10u));
+    m_cpuContext.r[29] = _mm_set_epi64x(0, static_cast<int64_t>(PS2_GUEST_RAM_SIZE - 0x10u));
     m_debugPc.store(m_cpuContext.pc, std::memory_order_relaxed);
     m_debugRa.store(static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[31], 0)), std::memory_order_relaxed);
     m_debugSp.store(static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[29], 0)), std::memory_order_relaxed);
@@ -8542,13 +9395,22 @@ void main()
         // shape GT3 draws for (its 16:9 option, GT3_ASPECT).
 #if defined(PS2X_GAME_GT3)
         const float wideAspect = gt3aspect::displayAspect(m_memory.getRDRAM());
+        constexpr bool tripleFrame = false;
 #else
         // GT4: the shown picture's video mode. 480i and 480p: 4:3, or 16:9
         // with GT4's own Aspect Ratio set to 16:9 (Gt4WideFlag); 1080i: GT4's
         // picture alone, 1728 of 1920 HD pixels across and 960 of 1080 lines,
         // 1.8:1 (developer, 2026-10-04: "GT4's picture only"; VIDEO-MODES.md 3.1).
-        const float wideAspect = ps2x::crt::is1080i(g_shownCrt) ? Gt4Picture1080Aspect(m_memory.getRDRAM(), m_memory.gs().vsyncTick.load(), ps2x::crt::pictureAspect(g_shownCrt))
-                                 : Gt4PictureAspect(m_memory.getRDRAM(), m_memory.gs().vsyncTick.load());
+        const float gt4Aspect = ps2x::crt::is1080i(g_shownCrt) ? Gt4Picture1080Aspect(m_memory.getRDRAM(), m_memory.gs().vsyncTick.load(), ps2x::crt::pictureAspect(g_shownCrt))
+                                : Gt4PictureAspect(m_memory.getRDRAM(), m_memory.gs().vsyncTick.load());
+#if !defined(GT4_STOCK_BUILD)
+        // Angled triple screens (gt4triple): a race frame comes as three pictures side by side (left, middle, right), each
+        // GT4's own shape; the pieces below give each its monitor, with nothing left out between them.
+        const bool tripleFrame = gt4triple::config().angled && srcWidth > 3.0f * srcHeight;
+#else
+        constexpr bool tripleFrame = false;
+#endif
+        const float wideAspect = tripleFrame ? 3.0f * (gt4Aspect > 0.0f ? gt4Aspect : 16.0f / 9.0f) : gt4Aspect;
 #endif
         const float aspect = wideAspect > 0.0f ? wideAspect : (squarePixels ? srcWidth / srcHeight : 4.0f / 3.0f);
         float dstHeight = std::min(screenHeight, screenWidth / aspect);
@@ -8592,20 +9454,22 @@ void main()
         std::vector<ScreenPiece> pieces;
         if ((tripleBezel > 0.0f || tripleScreens) && wideAspect > 2.5f)
         {
-            const float units = 3.0f + 2.0f * tripleBezel; // the picture's width in screen widths
+            // (angled triple screens: three pictures, each a whole screen's, nothing behind the frames)
+            const float pieceGap = tripleFrame ? 0.0f : tripleBezel;
+            const float units = 3.0f + 2.0f * pieceGap; // the picture's width in screen widths
             const float screenW = screenWidth / 3.0f;
             const float pictureH = std::min(screenHeight, screenW * units / wideAspect);
             const float partW = pictureH * wideAspect / units; // one screen's part, window pixels
             const float y = (screenHeight - pictureH) * 0.5f;
             for (int i = 0; i < 3; ++i)
             {
-                const float u0 = static_cast<float>(i) * (1.0f + tripleBezel) / units;
+                const float u0 = static_cast<float>(i) * (1.0f + pieceGap) / units;
                 pieces.push_back(ScreenPiece{u0, u0 + 1.0f / units,
                                              Rectangle{static_cast<float>(i) * screenW + (screenW - partW) * 0.5f, y, partW, pictureH}});
             }
             // The whole picture, placed so its middle part is on the middle screen
             // (the radar and the upscalers work on it).
-            dstRect = Rectangle{pieces[1].dst.x - (1.0f + tripleBezel) * partW, y, units * partW, pictureH};
+            dstRect = Rectangle{pieces[1].dst.x - (1.0f + pieceGap) * partW, y, units * partW, pictureH};
             dstWidth = dstRect.width;
             dstHeight = dstRect.height;
         }
@@ -8644,27 +9508,54 @@ void main()
         }
 #endif
 #if !defined(PS2X_GAME_GT3)
-        // Esc leaves borderless full screen; Alt+Enter toggles it. (GT3_FULLSCREEN=span
-        // windows are left as they are.)
+        // F11 or Alt+Enter: full screen on and off (developer 2026-10-30, "a key that lets us get in and out of full screen mode
+        // easily"); Esc leaves it. Three screens: their window over the three and a window on the middle monitor, in turn.
+        // (GT3_FULLSCREEN=span windows are left as they are.)
         if (!m_headless)
         {
             const bool alt = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
-            if ((IsKeyPressed(KEY_ESCAPE) || (alt && IsKeyPressed(KEY_ENTER))) && IsWindowFullscreen())
+            const bool toggle = IsKeyPressed(KEY_F11) || (alt && IsKeyPressed(KEY_ENTER));
+            const bool leave = IsKeyPressed(KEY_ESCAPE);
+#if defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
+            gt4screens::Window &win = gt4screens::window();
+            if (win.set && (toggle || (leave && win.full)))
             {
-                // GT3_FULLSCREEN=exclusive: Esc or Alt+Enter gives a window (Alt+Enter then goes to borderless full screen).
-                ToggleFullscreen();
-                showNote("Full screen off (Alt+Enter for borderless full screen)");
+                if (win.full)
+                {
+                    const int w = std::max(640, std::min(1600, win.midW - 160)), h = w * 9 / 16;
+                    ClearWindowState(FLAG_WINDOW_UNDECORATED);
+                    SetWindowSize(w, h);
+                    SetWindowPosition(win.midX + (win.midW - w) / 2, win.midY + (win.midH - h) / 2);
+                    win.full = false;
+                    showNote("Full screen off: a window on the middle monitor (F11 for the three screens again)");
+                }
+                else
+                {
+                    SetWindowState(FLAG_WINDOW_UNDECORATED);
+                    SetWindowPosition(win.x, win.y);
+                    SetWindowSize(win.w, win.h);
+                    win.full = true;
+                    showNote("Three screens (F11 or Esc to leave)");
+                }
             }
-            else if (IsKeyPressed(KEY_ESCAPE) && IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE))
+            else
+#endif
+            if ((leave || toggle) && IsWindowFullscreen())
+            {
+                // GT3_FULLSCREEN=exclusive: Esc, F11 or Alt+Enter gives a window (then F11 goes to borderless full screen).
+                ToggleFullscreen();
+                showNote("Full screen off (F11 for full screen)");
+            }
+            else if (leave && IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE))
             {
                 ToggleBorderlessWindowed();
-                showNote("Full screen off (Esc; Alt+Enter to go back)");
+                showNote("Full screen off (Esc; F11 to go back)");
             }
-            else if (alt && IsKeyPressed(KEY_ENTER))
+            else if (toggle)
             {
                 const bool wasFull = IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
                 ToggleBorderlessWindowed();
-                showNote(wasFull ? "Full screen off (Alt+Enter)" : "Full screen (Esc or Alt+Enter to leave)");
+                showNote(wasFull ? "Full screen off (F11)" : "Full screen (F11 or Esc to leave)");
             }
         }
 #endif
@@ -9074,7 +9965,22 @@ void main()
                 else
 #endif
                     fpsResolution = "Native   640 x 448";
-                gt4fps::draw({screenWidth, screenHeight, fpsStats.fps, fpsStats.maxMs, fpsGaps, fpsGapCount, fpsResolution.c_str()});
+                // Three screens: in the middle screen's top left, as GT4's own HUD (the developer's test 2026-10-30: it sat on the left screen).
+                // (Races: the middle piece; GT4's menus and movies: its 16:9 picture, which is on the middle screen.)
+#if !defined(GT4_STOCK_BUILD)
+                const bool fpsMiddle = gt4screens::config().on;
+#else
+                const bool fpsMiddle = false;
+#endif
+                const Rectangle fpsArea = pieces.size() == 3u ? pieces[1].dst : dstRect;
+                gt4fps::Frame fpsFrame{fpsMiddle ? fpsArea.width : static_cast<float>(screenWidth), static_cast<float>(screenHeight), fpsStats.fps, fpsStats.maxMs, fpsGaps,
+                                       fpsGapCount, fpsResolution.c_str()};
+                if (fpsMiddle)
+                {
+                    fpsFrame.originX = std::max(fpsArea.x, 0.0f);
+                    fpsFrame.originY = std::max(fpsArea.y, 0.0f);
+                }
+                gt4fps::draw(fpsFrame);
             }
             // Our own race HUD widgets and start lights (GT4_HUD_*, GT4_START_*; gt4_hud.h): on the game picture (on triple
             // screens the middle screen's part, with GT4's own HUD), after the scanline pass and all scaling.
@@ -9153,6 +10059,66 @@ void main()
                     UnloadImage(image);
                 }
             }
+#if defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
+            // Angled triple screens: F12 saves the three screens as shown, as the camera's lineup picture (F11 is full screen)
+            // (screens-lineup\<camera>.png next to GT4.exe; the launcher's Screens page shows it beside that camera's preset).
+            // The launcher's live link (gt4triple::pollLive): its sliders' settings taken in as they move, and that camera's
+            // lineup picture taken again a third of a second later, so the launcher's picture follows them. The camera GT4 is
+            // in now goes to screens-lineup\current.txt for the launcher's tab.
+            static int liveShotIn = -1;
+            static int lastViewNoted = -1;
+            gt4cam::pollBonnetLive(std::string(GetApplicationDirectory()) + "camera-live.txt"); // (the bonnet camera's live sliders)
+            if (gt4triple::config().angled)
+            {
+                const std::string appDir = GetApplicationDirectory();
+                if (gt4triple::pollLive(appDir + "screens-live.txt"))
+                    liveShotIn = 20;
+                const int viewNow = gt4triple::g_view.load(std::memory_order_relaxed);
+                if (viewNow != lastViewNoted)
+                {
+                    lastViewNoted = viewNow;
+                    std::error_code ec;
+                    std::filesystem::create_directories(appDir + "screens-lineup", ec);
+                    if (FILE *f = std::fopen((appDir + "screens-lineup\\current.txt").c_str(), "w"))
+                    {
+                        std::fprintf(f, "%s\n", gt4triple::kCameraNames[viewNow]);
+                        std::fclose(f);
+                    }
+                }
+            }
+            const bool liveShot = liveShotIn >= 0 && liveShotIn-- == 0;
+            if (gt4triple::config().angled && ((!m_headless && IsKeyPressed(KEY_F12)) || liveShot))
+            {
+                const std::string dir = std::string(GetApplicationDirectory()) + "screens-lineup"; // (raylib: GT4.exe's folder, with its slash)
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                const char *cam = gt4triple::kCameraNames[gt4triple::g_view.load(std::memory_order_relaxed)];
+                const std::string path = dir + "\\" + cam + ".png";
+                {
+                    // (beside it, the settings it was taken with: the launcher moves the picture by what changes after)
+                    const gt4triple::Camera c = gt4triple::cameraNow(gt4triple::g_view.load(std::memory_order_relaxed));
+                    if (FILE *f = std::fopen((dir + "\\" + cam + ".txt").c_str(), "w"))
+                    {
+                        std::fprintf(f, "angle=%.1f\nfov=%.1f\ntrim=%.1f\nbezels=%d\nupleft=%.1f\nupright=%.1f\nzoomleft=%.1f\nzoomright=%.1f\ngap=%.4f\neye=%.0f\n", gt4triple::angleNow(), c.fov, c.trim,
+                                     c.bezels ? 1 : 0, c.upLeft, c.upRight, c.zoomLeft, c.zoomRight, gt4screens::config().gap, gt4triple::eyeNow());
+                        std::fclose(f);
+                    }
+                }
+#if defined(PS2X_GS_VK)
+                if (vkPresents)
+                    vkShotPath = path;
+                else
+#endif
+                {
+                    rlDrawRenderBatchActive();
+                    Image image = LoadImageFromScreen();
+                    ExportImage(image, path.c_str());
+                    UnloadImage(image);
+                }
+                if (!liveShot)
+                    showNote(std::string("Lineup picture saved for the ") + cam + " camera (F12): see Screens in the launcher");
+            }
+#endif
         }
 #if defined(PS2X_GAME_GT4) && !defined(GT4_STOCK_BUILD)
         // (the launcher's race pictures without the Vulkan window presenter: the window read back here)

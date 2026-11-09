@@ -105,6 +105,18 @@ namespace ps2vu1t
         void *user = nullptr;
         uint32_t errors = 0;
 
+        // Read / write tracking (images generated with GT3_VU1T_TRACK=1; GT4's parallel VU1, analysis/design/
+        // triple-60fps): while `track` is set, what the program read before writing it (its inputs) and what it wrote,
+        // lane by lane. Registers in regRead/regWritten[3]: VF register n lane k at bit 4n + k (x = 0) of words 0-1,
+        // then in word 2 (kTrack*): VI 1-15 at bits 1-15, ACC lanes at 16-19, Q, P, I, R, MAC, the status's FMAC bits
+        // (0-3), its FDIV bits (4-5), its sticky bits (6-11), clip. VU memory in memRead/memWritten[64]: qword q lane k
+        // at bit 4q + k. The clip register counts as read only while fewer than four CLIPs have shifted the input out
+        // (clipShifts).
+        bool track = false;
+        uint64_t regRead[3] = {}, regWritten[3] = {};
+        uint64_t memRead[64] = {}, memWritten[64] = {};
+        uint8_t clipShifts = 0;
+
         void begin(VU1State &state, uint8_t *data, uint64_t startCycle)
         {
             s = &state;
@@ -124,19 +136,91 @@ namespace ps2vu1t
             bbValid = false;
             kick.active = false;
             errors = 0;
+            if (track)
+            {
+                std::memset(regRead, 0, sizeof(regRead));
+                std::memset(regWritten, 0, sizeof(regWritten));
+                std::memset(memRead, 0, sizeof(memRead));
+                std::memset(memWritten, 0, sizeof(memWritten));
+                clipShifts = 0;
+            }
         }
     };
 
+    // Ctx::regRead / regWritten word 2's bits (words 0-1: VF lanes).
+    constexpr uint64_t kTrackAcc0 = 1ull << 16, kTrackQ = 1ull << 20, kTrackP = 1ull << 21, kTrackI = 1ull << 22,
+                       kTrackR = 1ull << 23, kTrackMac = 1ull << 24, kTrackStatusFmac = 1ull << 25,
+                       kTrackStatusFdiv = 1ull << 26, kTrackStatusSticky = 1ull << 27, kTrackClip = 1ull << 28;
+    // The tracking code is compiled only with PS2X_VU1T_TRACK (CMake option, off: even unused, the checks cost ~9% of the
+    // VIF1/VU1 thread in triples, 2026-10-31); without it the macros are empty.
+#if defined(PS2X_VU1T_TRACK)
+#define VU1T_TRK(c, r0, r1, r2, w0, w1, w2)                                                                                    \
+    do                                                                                                                         \
+    {                                                                                                                          \
+        if ((c).track)                                                                                                         \
+        {                                                                                                                      \
+            (c).regRead[0] |= (r0) & ~(c).regWritten[0];                                                                       \
+            (c).regRead[1] |= (r1) & ~(c).regWritten[1];                                                                       \
+            (c).regRead[2] |= (r2) & ~(c).regWritten[2];                                                                       \
+            (c).regWritten[0] |= (w0);                                                                                         \
+            (c).regWritten[1] |= (w1);                                                                                         \
+            (c).regWritten[2] |= (w2);                                                                                         \
+        }                                                                                                                      \
+    } while (0)
+
+    // lanes: bit k for lane k (x = 0) of the qword at byteAddress
+    inline void trackMemRead(Ctx &c, uint32_t byteAddress, uint32_t lanes)
+    {
+        const uint32_t base = ((byteAddress >> 4) & 1023u) * 4u;
+        const uint64_t bits = static_cast<uint64_t>(lanes & 0xFu) << (base & 63u);
+        c.memRead[base >> 6] |= bits & ~c.memWritten[base >> 6];
+    }
+#define VU1T_MRD(c, byteAddress, lanes)                                                                                        \
+    do                                                                                                                         \
+    {                                                                                                                          \
+        if ((c).track)                                                                                                         \
+            ::ps2vu1t::trackMemRead((c), (byteAddress), (lanes));                                                              \
+    } while (0)
+    // FCEQ / FCAND / FCOR / FCGET: the clip register is an input while some of its bits are still the input's.
+#define VU1T_CLIPREAD(c)                                                                                                       \
+    do                                                                                                                         \
+    {                                                                                                                          \
+        if ((c).track && (c).clipShifts < 4u)                                                                                  \
+            (c).regRead[2] |= ::ps2vu1t::kTrackClip;                                                                           \
+    } while (0)
+#else
+#define VU1T_TRK(c, r0, r1, r2, w0, w1, w2) ((void)0)
+#define VU1T_MRD(c, byteAddress, lanes) ((void)0)
+#define VU1T_CLIPREAD(c) ((void)0)
+#endif
+
     // ---------------------------------------------------------------- values
+#if defined(PS2X_VU1T_GUARDSTATS)
+    // Analysis builds only (triple-60fps): how often the exactness guards change a value.
+    // [0] N/NV lanes seen, [1] N/NV lanes changed (denormal or exponent 255), [2] FMAC vector checks,
+    // [3] checks sent to the scalar path, [4] scalar fx calls, [5] fx calls that changed the float result,
+    // [6] of those: zero results, [7] overflow, [8] underflow.
+    inline uint64_t g_guardStats[9];
+#define VU1T_GUARD(i, n) (::ps2vu1t::g_guardStats[i] += (n))
+#else
+#define VU1T_GUARD(i, n) ((void)0)
+#endif
     inline float N(float value) // PS2 operand rule (VU1Interpreter::normalizeOperand)
     {
         uint32_t bits = 0;
         std::memcpy(&bits, &value, sizeof(bits));
         const uint32_t exponent = (bits >> 23) & 0xFFu;
+        VU1T_GUARD(0, 1);
         if (exponent == 0u)
+        {
+            VU1T_GUARD(1, (bits & 0x7FFFFFFFu) != 0u);
             bits &= 0x80000000u;
+        }
         else if (exponent == 0xFFu)
+        {
+            VU1T_GUARD(1, 1);
             bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
+        }
         std::memcpy(&value, &bits, sizeof(value));
         return value;
     }
@@ -166,6 +250,30 @@ namespace ps2vu1t
         const double magnitude = std::fabs(exact);
         uint8_t flags = negative ? 0x2u : 0u;
         uint32_t bits = negative ? 0x80000000u : 0u;
+#if defined(PS2X_VU1T_GUARDSTATS)
+        {
+            VU1T_GUARD(4, 1);
+            uint32_t before;
+            std::memcpy(&before, &value, 4);
+            float after = value;
+            if (magnitude == 0.0)
+                std::memcpy(&after, &bits, 4);
+            else if (magnitude > static_cast<double>(std::numeric_limits<float>::max()))
+            {
+                const uint32_t b = bits | 0x7F7FFFFFu;
+                std::memcpy(&after, &b, 4);
+            }
+            else if (magnitude < static_cast<double>(std::numeric_limits<float>::min()))
+                std::memcpy(&after, &bits, 4);
+            uint32_t a;
+            std::memcpy(&a, &after, 4);
+            if (a != before)
+            {
+                VU1T_GUARD(5, 1);
+                VU1T_GUARD(magnitude == 0.0 ? 6 : magnitude > static_cast<double>(std::numeric_limits<float>::max()) ? 7 : 8, 1);
+            }
+        }
+#endif
         if (magnitude == 0.0)
         {
             flags |= 0x1u;
@@ -267,6 +375,15 @@ namespace ps2vu1t
     {
         const __m128i bits = _mm_castps_si128(v);
         const __m128i exp = _mm_and_si128(bits, _mm_set1_epi32(0x7F800000));
+#if defined(PS2X_VU1T_GUARDSTATS)
+        VU1T_GUARD(0, 4);
+        {
+            const __m128i mant = _mm_and_si128(bits, _mm_set1_epi32(0x007FFFFF));
+            const __m128i den = _mm_andnot_si128(_mm_cmpeq_epi32(mant, _mm_setzero_si128()), _mm_cmpeq_epi32(exp, _mm_setzero_si128()));
+            const __m128i inf = _mm_cmpeq_epi32(exp, _mm_set1_epi32(0x7F800000));
+            VU1T_GUARD(1, static_cast<uint64_t>(__builtin_popcount(_mm_movemask_ps(_mm_castsi128_ps(_mm_or_si128(den, inf))))));
+        }
+#endif
         const __m128i sign = _mm_and_si128(bits, _mm_set1_epi32(static_cast<int>(0x80000000u)));
         __m128i out = _mm_blendv_epi8(bits, sign, _mm_cmpeq_epi32(exp, _mm_setzero_si128()));
         out = _mm_blendv_epi8(out, _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF)),
@@ -404,18 +521,27 @@ namespace ps2vu1t
     }
     inline bool keepMulV(__m128 r, __m128 s, __m128 t, int lanes)
     {
-        return normalV(r, lanes) || normalOrZeroV(r, _mm_or_si128(zeroBitsV(s), zeroBitsV(t)), lanes);
+        const bool k = normalV(r, lanes) || normalOrZeroV(r, _mm_or_si128(zeroBitsV(s), zeroBitsV(t)), lanes);
+        VU1T_GUARD(2, 1);
+        VU1T_GUARD(3, !k);
+        return k;
     }
     inline bool keepAddV(__m128 r, __m128 s, __m128 t, int lanes)
     {
+        VU1T_GUARD(2, 1);
         if (normalV(r, lanes))
             return true;
         const __m128 negT = _mm_xor_ps(t, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(0x80000000u))));
-        return normalOrZeroV(r, _mm_castps_si128(_mm_cmpeq_ps(s, negT)), lanes);
+        const bool k = normalOrZeroV(r, _mm_castps_si128(_mm_cmpeq_ps(s, negT)), lanes);
+        VU1T_GUARD(3, !k);
+        return k;
     }
     inline bool keepSubV(__m128 r, __m128 s, __m128 t, int lanes)
     {
-        return normalV(r, lanes) || normalOrZeroV(r, _mm_castps_si128(_mm_cmpeq_ps(s, t)), lanes);
+        const bool k = normalV(r, lanes) || normalOrZeroV(r, _mm_castps_si128(_mm_cmpeq_ps(s, t)), lanes);
+        VU1T_GUARD(2, 1);
+        VU1T_GUARD(3, !k);
+        return k;
     }
     inline bool keepMaddV(__m128 r, __m128 p, __m128 acc, __m128 s, __m128 t, int lanes)
     {
@@ -423,12 +549,15 @@ namespace ps2vu1t
         const __m128i bad = _mm_or_si128(
             _mm_or_si128(_mm_cmplt_epi32(re, _mm_set1_epi32(2)), _mm_cmpgt_epi32(re, _mm_set1_epi32(252))),
             _mm_cmpgt_epi32(pe, _mm_add_epi32(re, _mm_set1_epi32(16))));
+        VU1T_GUARD(2, 1);
         if ((_mm_movemask_ps(_mm_castsi128_ps(bad)) & lanes) == 0)
             return true;
         const __m128i zero =
             _mm_and_si128(_mm_and_si128(zeroBitsV(acc), _mm_or_si128(zeroBitsV(s), zeroBitsV(t))), zeroBitsV(r));
         const __m128i ok = _mm_or_si128(_mm_andnot_si128(bad, _mm_set1_epi32(-1)), zero);
-        return ((~_mm_movemask_ps(_mm_castsi128_ps(ok))) & lanes) == 0;
+        const bool k = ((~_mm_movemask_ps(_mm_castsi128_ps(ok))) & lanes) == 0;
+        VU1T_GUARD(3, !k);
+        return k;
     }
 
     // OR of prodFlags over the lanes (product-sum sticky flags), p = s * t.
@@ -493,6 +622,8 @@ namespace ps2vu1t
 #define VU1T_INLINE inline __attribute__((always_inline))
 #endif
 
+    // (commitInline at every commit point was tried on 2026-10-31: the bench went from 45.5 to ~50 ms, the larger
+    // blocks cost more than the call. The call stays.)
     VU1T_INLINE void commit(Ctx &c)
     {
         if (c.nextCommit <= c.cycle)
@@ -551,6 +682,14 @@ namespace ps2vu1t
         if (c.flagTail - c.flagHead >= Ctx::kFlagRing - 2u)
             commitSlow(c, c.cycle);
         c.workingClip = ((c.workingClip << 6) | (clip & 0x3Fu)) & 0xFFFFFFu;
+#if defined(PS2X_VU1T_TRACK)
+        if (c.track)
+        {
+            c.regWritten[2] |= kTrackClip;
+            if (c.clipShifts < 4u)
+                ++c.clipShifts;
+        }
+#endif
         FlagEntry &e = c.flags[c.flagTail++ % Ctx::kFlagRing];
         e.issue = c.cycle;
         e.ready = c.cycle + 4u;
@@ -626,6 +765,15 @@ namespace ps2vu1t
     VU1T_INLINE void store(Ctx &c, uint32_t address, const uint32_t words[4], uint8_t dest)
     {
         beforeStore(c);
+#if defined(PS2X_VU1T_TRACK)
+        if (c.track)
+        {
+            // dest: x = 8 ... w = 1; lane k (x = 0) is bit 3 - k of it
+            const uint32_t lanes = ((dest >> 3) & 1u) | ((dest >> 1) & 2u) | ((dest << 1) & 4u) | ((dest << 3) & 8u);
+            const uint32_t base = ((address >> 4) & 1023u) * 4u;
+            c.memWritten[base >> 6] |= static_cast<uint64_t>(lanes) << (base & 63u);
+        }
+#endif
         uint8_t *q = c.mem + address;
         if (dest & 0x8u)
             std::memcpy(q + 0, &words[0], 4);

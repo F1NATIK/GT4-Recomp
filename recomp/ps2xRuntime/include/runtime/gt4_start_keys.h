@@ -29,7 +29,7 @@ namespace gt4startkeys
         "GT4_PAD2", "PS2X_INPUT2", "PS2X_WHEEL_PORT",                                      // player 2 (port 2)
         // the wheel and pedals (wheel-glue's PS2X_WHEEL_* keys; diagnostics such as
         // PS2X_WHEEL_LOG / PS2X_WHEEL_FFB_LOG / PS2X_WHEEL_REPLAY stay out)
-        "PS2X_WHEEL", "PS2X_WHEEL_CONFIG", "PS2X_WHEEL_LINES", "PS2X_WHEEL_DEVICE", "PS2X_WHEEL_PEDALS",
+        "PS2X_WHEEL", "PS2X_WHEEL_CONFIG", "PS2X_WHEEL_LINES", "PS2X_WHEEL_DEVICE", "PS2X_WHEEL_PEDALS", "PS2X_WHEEL_SHIFTER",
         "PS2X_WHEEL_MODEL", "PS2X_WHEEL_ROTATION", "PS2X_WHEEL_LOCK", "PS2X_WHEEL_STEER_INVERT", "PS2X_WHEEL_FFB",
         "PS2X_WHEEL_FFB_GAIN", "PS2X_WHEEL_FFB_INVERT",
         "GT4_USB", "GT4_USB_ROOT", "GT4_EYETOY",                                           // devices

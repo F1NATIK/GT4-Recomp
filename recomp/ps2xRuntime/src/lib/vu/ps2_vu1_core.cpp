@@ -10,6 +10,7 @@
 #include <bit>
 #include <iostream>
 #include <cfenv>
+#include <xmmintrin.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1800,6 +1801,7 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][1] = 0.0f;
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
+    m_lastRunTracked = false;
     // The interpreter's pipelines only matter when it runs the program: a
     // translated program has its own (ps2vu1t::Ctx::begin). Clearing them
     // for every call was about 2% of the VIF1/VU1 thread.
@@ -1820,6 +1822,7 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     m_state.itop = itop;
     m_state.stoppedByD = false;
     m_state.stoppedByT = false;
+    m_lastRunTracked = false;
     // After a program that ended, every pipeline is empty, so continuing at
     // pc is a fresh program.
     if (!m_midProgram && tryTranslated(vuCode, codeSize, vuData, dataSize, gs, memory, m_state.pc))
@@ -2167,6 +2170,7 @@ bool VU1Interpreter::tryTranslated(uint8_t *vuCode, uint32_t codeSize, uint8_t *
             v.hash[k] = 1469598103934665603ull;
             v.bytes[k] = v.count[k] = 0;
         }
+        c.track = false;
         c.begin(v.stateT, v.dataT.data(), m_cycle);
         c.submit = &VU1Interpreter::submitTranslatedPacket;
         c.user = this;
@@ -2188,12 +2192,15 @@ bool VU1Interpreter::tryTranslated(uint8_t *vuCode, uint32_t codeSize, uint8_t *
         m_verifyPending = true;
         return false;
     }
+    c.track = m_tracking;
     c.begin(m_state, vuData, m_cycle);
     c.submit = &VU1Interpreter::submitTranslatedPacket;
     c.user = this;
 
-    const int previousRoundingMode = std::fegetround();
-    const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
+    // Round toward zero in MXCSR only (the translated code and its runtime are SSE: no x87, checked with
+    // llvm-objdump); mingw's fesetround also loads the x87 control word and was ~1.7% of the VU1 run time.
+    const uint32_t previousCsr = _mm_getcsr();
+    _mm_setcsr((previousCsr & ~0x6000u) | 0x6000u);
     // GT4_VU1_SLOW_PCT=<n> (diagnostics only): each translated run then takes n% longer (a spin after it), to
     // see how much the frame rate depends on the VU1 thread's speed.
     static const int slowPct = [] {
@@ -2212,8 +2219,7 @@ bool VU1Interpreter::tryTranslated(uint8_t *vuCode, uint32_t codeSize, uint8_t *
         {
         }
     }
-    if (useVuRounding && previousRoundingMode != -1)
-        std::fesetround(previousRoundingMode);
+    _mm_setcsr((_mm_getcsr() & ~0x6000u) | (previousCsr & 0x6000u)); // (the rounding back; status bits as fesetround left them)
     if (result == 0u)
         return false; // no translation for this entry point: nothing ran
 
@@ -2230,6 +2236,7 @@ bool VU1Interpreter::tryTranslated(uint8_t *vuCode, uint32_t codeSize, uint8_t *
     m_state.haltAfterDelaySlot = false;
     m_workingClip = m_state.clip;
     m_midProgram = false;
+    m_lastRunTracked = m_tracking && result == 1u && c.errors == 0u;
     ++m_translatedPrograms;
     if (vu1Stats().enabled)
         vu1Stats().runs += 1;

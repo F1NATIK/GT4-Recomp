@@ -558,6 +558,7 @@ namespace gt4stock
             const float colStep = 200, rowH = 30, pw = 40 + cols * colStep;
             const size_t rows = (std::size(kStats) + cols - 1) / cols;
             const Rectangle pop = R(x0, statsButton.y + statsButton.height + 6, pw, 16 + 34 + rows * rowH + 10);
+            ui_.auditOverlay(); // (test pictures' layout audit: the list is drawn over the table on purpose)
             ui_.round(R(pop.x + 2, pop.y + 4, pop.width, pop.height), 10, ui::alpha(BLACK, 0.35f));
             ui_.round(pop, 10, t.panel2);
             ui_.roundLine(pop, 10, 1, t.border);

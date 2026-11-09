@@ -7,6 +7,8 @@
 //
 //   GT4_FPS_COUNTER   off (default) | simple | detailed   (on / 1: detailed, the counter before simple
 //                     and detailed). F3 while playing: off -> simple -> detailed -> off.
+//   GT4_FPS_POS       <x %>,<y %>: the box's top left in % of its area (absent: the top left corner). The left mouse
+//                     button drags it while playing and writes this line to gt4-start.env (gt4_fps_counter.cpp).
 //   GT4_FPS_STATS     what detailed shows: a comma list of fps, frametime, worst, low1, graph, cpu,
 //                     gpu, ram, vram, resolution, renderer (absent, empty or "all": every one).
 //                     Simple always shows fps and frame time only.
@@ -58,6 +60,7 @@ namespace gt4fps
         const float *gapsMs = nullptr;  // the latest frame times, newest first (GS::recentFrameGapsMs)
         size_t gaps = 0;
         const char *resolution = "";    // the internal resolution, e.g. "2x, 1280 x 896, exact"
+        float originX = 0, originY = 0; // the top left of the area it is drawn in (three screens: the middle screen's picture)
     };
 
     Mode mode();

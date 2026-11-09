@@ -95,6 +95,14 @@ namespace gt4stock
 
         // For the report and the tests.
         size_t carNameCount() const { return carNames_.size(); }
+        // Every car code with a name (the race HUD's names file, gt4full_app.cpp writeHudNames).
+        std::vector<uint32_t> carCodes() const
+        {
+            std::vector<uint32_t> v;
+            for (const auto &kv : carNames_)
+                v.push_back(kv.first);
+            return v;
+        }
         size_t colourGroupCount() const { return colours_.size(); }
         size_t stringCount() const { return strings_.size(); }
         size_t textCategoryCount() const { return rtext_.size(); }

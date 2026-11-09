@@ -88,6 +88,7 @@ namespace gt4stock::ui
         Network, // its Network page: three linked computers
         Trophy,  // Game progress
         Speaker, // its Sound page: a loudspeaker and two sound waves
+        Track,   // its Tracks page: a circuit's outline
 #endif
     };
 
@@ -214,6 +215,41 @@ namespace gt4stock::ui
     public:
         // Test pictures only: a drop-down drawn open (its box fills in the list when it is drawn).
         void openDropdownForTest(const std::string &id) { openDropdown_ = id; dropJustOpened_ = true; dropFirst_ = 0; }
+
+        // Layout audit (test pictures only, off otherwise): what a frame drew (cards, text, controls), checked at the end
+        // of it for text wider than its box, something sticking out of its card, cards overlapping, text under a control
+        // or under other text, and anything past the window's bottom outside a scrolling area.
+        void setAudit(bool on) { audit_ = on; }
+        std::vector<std::string> auditIssues() const;
+        void auditOverlay() // a popup drawn over the page from here on (checked apart from the page)
+        {
+            if (audit_)
+                ++auditLayer_;
+        }
+
+    private:
+        enum class AuditKind : unsigned char
+        {
+            Card,
+            Text,
+            Control,
+            Row, // a clickable row: only its place in its card is checked (its labels are drawn on it)
+        };
+        struct AuditBox
+        {
+            Rectangle r;
+            AuditKind kind;
+            Rectangle clip;  // the scrolling area it was drawn in (width 0: none)
+            Rectangle owner; // text drawn inside a control: that control's box (width 0: none)
+            int layer;       // a whole-window fill (a dialog's dimming) starts a new layer
+            std::string what;
+        };
+        bool audit_ = false;
+        bool auditPaused_ = false; // end()'s drop-down list
+        int auditLayer_ = 0;
+        Rectangle auditOwner_{};
+        std::vector<AuditBox> auditBoxes_;
+        void auditAdd(Rectangle r, AuditKind kind, const std::string &what);
 
     private:
         bool consumedClick_ = false;

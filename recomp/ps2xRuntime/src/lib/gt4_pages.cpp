@@ -539,6 +539,10 @@ namespace gt4pages
         if (bind(l, reinterpret_cast<sockaddr *>(&a), sizeof(a)) != 0 || listen(l, 8) != 0)
         {
             std::fprintf(stderr, "[gt4-pages] port %d is in use or blocked (error %d): no pages\n", port, WSAGetLastError());
+            // (developer 2026-10-30, "telemetry on the 4th monitor didnt work": a side copy of GT4's own Multi Monitor Mode had the
+            // port, so the telemetry window never opened and nothing said so.)
+            if (gt4tele::parse(envOr("GT4_TELEMETRY_MONITOR", "0")).kind != gt4tele::Setting::Off)
+                std::fprintf(stderr, "[gt4-pages] telemetry window: not opened (another program, perhaps another GT4, has port %d)\n", port);
             closesocket(l);
             return;
         }

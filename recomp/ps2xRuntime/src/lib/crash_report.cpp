@@ -215,6 +215,10 @@ void ps2x::startSamplingProfiler()
         std::map<DWORD, ThreadInfo> threads;
         std::unordered_map<DWORD64, uint64_t> leaf, total;
         std::map<std::array<DWORD64, 4>, uint64_t> edges; // leaf and its first three distinct callers
+        const std::string only = [] {
+            const char *v = std::getenv("PS2X_SAMPLE_THREAD");
+            return std::string(v ? v : "");
+        }();
         auto refresh = [&] {
             HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
             THREADENTRY32 entry{};
@@ -226,8 +230,27 @@ void ps2x::startSamplingProfiler()
                     continue;
                 HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
                                       entry.th32ThreadID);
-                if (h)
-                    threads[entry.th32ThreadID].handle = h;
+                if (!h)
+                    continue;
+                if (!only.empty())
+                {
+                    // PS2X_SAMPLE_THREAD=<name>: only the threads with that name (e.g. "GS GL"), sampled every round
+                    // whether or not their CPU time moved (it moves in 15.6 ms ticks); unnamed ones are looked at
+                    // again later (a thread names itself after it starts)
+                    PWSTR description = nullptr;
+                    char name[64] = "";
+                    if (SUCCEEDED(GetThreadDescription(h, &description)) && description)
+                    {
+                        WideCharToMultiByte(CP_UTF8, 0, description, -1, name, sizeof(name), nullptr, nullptr);
+                        LocalFree(description);
+                    }
+                    if (only != name)
+                    {
+                        CloseHandle(h);
+                        continue;
+                    }
+                }
+                threads[entry.th32ThreadID].handle = h;
             }
             CloseHandle(snap);
         };
@@ -262,7 +285,7 @@ void ps2x::startSamplingProfiler()
                     continue;
                 const ULONGLONG cpu = ((ULONGLONG(user.dwHighDateTime) << 32) | user.dwLowDateTime) +
                                       ((ULONGLONG(kernel.dwHighDateTime) << 32) | kernel.dwLowDateTime);
-                const bool busy = cpu != info.lastCpu;
+                const bool busy = cpu != info.lastCpu || !only.empty();
                 info.lastCpu = cpu;
                 if (!busy || SuspendThread(info.handle) == DWORD(-1))
                     continue;
